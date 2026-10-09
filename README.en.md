@@ -2,14 +2,14 @@
 
 A lightweight terminal dashboard for NVIDIA GPU, system memory, process, and network monitoring.
 
-`ctop` is a single C11 program with no curses dependency. It reads GPU data through NVML and system data from Linux `/proc` interfaces.
+`ctop` is a single C11 program with no curses dependency. It reads GPU data through NVML, system data from Linux `/proc` interfaces, and link speeds from `/sys`.
 
 ## Features
 
 - GPU temperature, power, VRAM, utilization, and GPU process information
 - RAM and SWAP usage with history graphs
 - VRAM and GPU utilization history graphs
-- Network throughput in bit/s with a 1,000 Mbps link baseline
+- Network throughput in bit/s with per-interface link-speed utilization
 - RX/TX indicators and per-interface network rows
 - Docker-related interfaces (`docker*`, `br-*`, and `veth*`) excluded from host network totals
 - Mouse-enabled section collapse/expand
@@ -35,7 +35,7 @@ The build script defaults to CUDA 12.8 at `/usr/local/cuda-12.8`. A different CU
 - An interactive Linux terminal
 - A terminal at least 76 columns by 13 rows
 
-The program also reads `/proc/meminfo`, `/proc/net/dev`, `/proc/stat`, and `/proc/uptime`.
+The program also reads `/proc/meminfo`, `/proc/net/dev`, `/proc/stat`, `/proc/uptime`, and `/sys/class/net/<interface>/speed`.
 
 ## Installing prerequisites
 
@@ -105,4 +105,4 @@ The top-bar actions can also be clicked when the terminal supports SGR mouse inp
 
 ## Notes
 
-Network rates are calculated from interface byte counters and converted to bits per second. The displayed utilization uses 1,000,000,000 bit/s as the capacity of each monitored 1 Gbps interface. Traffic from Docker containers leaving the host is still visible through the host's physical interface; the dashboard does not provide per-container accounting.
+Network rates are calculated from interface byte counters and converted to bits per second. The displayed utilization uses each interface's link speed from `/sys/class/net/<interface>/speed`; interfaces without a readable speed show `N/A` utilization. Traffic from Docker containers leaving the host is still visible through the host's physical interface; the dashboard does not provide per-container accounting.

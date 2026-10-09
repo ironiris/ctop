@@ -34,7 +34,6 @@
 #define MAX_NETWORK_INTERFACES 32
 #define MAX_CLICK_TARGETS 32
 #define INPUT_BUFFER_SIZE 8192
-#define NETWORK_CAPACITY_BPS 1000000000.0
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -119,7 +118,10 @@ typedef struct {
     double rx_bps;
     double tx_bps;
     double total_bps;
+    double capacity_bps;
     double utilization_percent;
+    bool capacity_valid;
+    bool utilization_valid;
     bool valid;
 } NetworkInterfaceInfo;
 
@@ -131,6 +133,7 @@ typedef struct {
     double total_bps;
     double utilization_percent;
     double capacity_bps;
+    bool utilization_valid;
     bool valid;
 } NetworkInfo;
 
@@ -663,6 +666,23 @@ static bool ignored_network_interface(const char *name) {
            strncmp(name, "veth", 4) == 0;
 }
 
+static bool read_network_capacity(const char *name, double *capacity_bps) {
+    char path[PATH_MAX];
+    int length = snprintf(path, sizeof(path), "/sys/class/net/%s/speed", name);
+    if (length < 0 || (size_t)length >= sizeof(path)) return false;
+
+    FILE *file = fopen(path, "r");
+    if (!file) return false;
+
+    long long speed_mbps = -1;
+    bool valid = fscanf(file, "%lld", &speed_mbps) == 1 && speed_mbps > 0;
+    fclose(file);
+    if (!valid) return false;
+
+    *capacity_bps = (double)speed_mbps * 1000000.0;
+    return true;
+}
+
 static bool read_network_info(NetworkInfo *network) {
     memset(network, 0, sizeof(*network));
     FILE *file = fopen("/proc/net/dev", "r");
@@ -681,6 +701,7 @@ static bool read_network_info(NetworkInfo *network) {
 
         NetworkInterfaceInfo *current = &network->interfaces[network->interface_count++];
         snprintf(current->name, sizeof(current->name), "%s", interface);
+        current->capacity_valid = read_network_capacity(interface, &current->capacity_bps);
         NetworkPrevious *previous = find_network_previous(interface);
         if (previous && previous->valid && timestamp > previous->timestamp &&
             rx_bytes >= previous->rx_bytes && tx_bytes >= previous->tx_bytes) {
@@ -688,8 +709,11 @@ static bool read_network_info(NetworkInfo *network) {
             current->rx_bps = (double)(rx_bytes - previous->rx_bytes) * 8.0 / elapsed;
             current->tx_bps = (double)(tx_bytes - previous->tx_bytes) * 8.0 / elapsed;
             current->total_bps = current->rx_bps + current->tx_bps;
-            current->utilization_percent =
-                100.0 * current->total_bps / NETWORK_CAPACITY_BPS;
+            if (current->capacity_valid) {
+                current->utilization_percent =
+                    100.0 * current->total_bps / current->capacity_bps;
+                current->utilization_valid = true;
+            }
             current->valid = true;
         }
         if (previous) {
@@ -702,17 +726,22 @@ static bool read_network_info(NetworkInfo *network) {
     fclose(file);
     if (!network->interface_count) return false;
 
-    network->capacity_bps = NETWORK_CAPACITY_BPS * network->interface_count;
     bool has_valid_interface = false;
+    bool all_valid_interfaces_have_capacity = true;
     for (int i = 0; i < network->interface_count; i++) {
         const NetworkInterfaceInfo *current = &network->interfaces[i];
+        if (current->capacity_valid) network->capacity_bps += current->capacity_bps;
         if (!current->valid) continue;
         has_valid_interface = true;
         network->rx_bps += current->rx_bps;
         network->tx_bps += current->tx_bps;
+        if (!current->capacity_valid) all_valid_interfaces_have_capacity = false;
     }
     network->total_bps = network->rx_bps + network->tx_bps;
-    network->utilization_percent = network->capacity_bps
+    network->utilization_valid = has_valid_interface &&
+                                 network->capacity_bps > 0.0 &&
+                                 all_valid_interfaces_have_capacity;
+    network->utilization_percent = network->utilization_valid
                                        ? 100.0 * network->total_bps / network->capacity_bps
                                        : 0.0;
     network->valid = has_valid_interface;
@@ -1402,11 +1431,25 @@ static int system_content_rows(int interface_count, bool collapsed) {
     return network_rows > memory_rows ? network_rows : memory_rows;
 }
 
+static void format_network_capacity(char *out, size_t size, double capacity_bps, bool valid) {
+    if (!valid) snprintf(out, size, "N/A");
+    else snprintf(out, size, "%.0fMbps", capacity_bps / 1000000.0);
+}
+
 static void format_network_line(const NetworkInterfaceInfo *interface,
                                 bool include_name, char *line, size_t line_size,
                                 int *down_offset, int *up_offset) {
-    char total[32], rx[32], tx[32];
+    char capacity[32], load[32], total[32], rx[32], tx[32];
     bool valid = interface && interface->valid;
+    bool capacity_valid = interface && interface->capacity_valid;
+    bool utilization_valid = interface && interface->utilization_valid;
+    format_network_capacity(capacity, sizeof(capacity),
+                            interface ? interface->capacity_bps : 0.0,
+                            capacity_valid);
+    if (utilization_valid)
+        snprintf(load, sizeof(load), "%.1f%%", interface->utilization_percent);
+    else
+        snprintf(load, sizeof(load), "N/A");
     format_network_rate(total, sizeof(total), interface ? interface->total_bps : 0.0, valid);
     format_network_rate(rx, sizeof(rx), interface ? interface->rx_bps : 0.0, valid);
     format_network_rate(tx, sizeof(tx), interface ? interface->tx_bps : 0.0, valid);
@@ -1414,17 +1457,8 @@ static void format_network_line(const NetworkInterfaceInfo *interface,
     char prefix[96];
     if (include_name) snprintf(prefix, sizeof(prefix), "NETWORK(%s)", name);
     else snprintf(prefix, sizeof(prefix), "NETWORK");
-    double load = valid ? interface->utilization_percent : 0.0;
-    snprintf(line, line_size, "%s | 1000Mbps(%.1f%%) | TOTAL:%s | d:%s | u:%s",
-             prefix, load, total, rx, tx);
-    if (!valid) {
-        char *load_start = strstr(line, "1000Mbps(");
-        if (load_start) {
-            load_start += strlen("1000Mbps(");
-            snprintf(load_start, line_size - (size_t)(load_start - line),
-                     "N/A) | TOTAL:%s | d:%s | u:%s", total, rx, tx);
-        }
-    }
+    snprintf(line, line_size, "%s | %s(%s) | TOTAL:%s | d:%s | u:%s",
+             prefix, capacity, load, total, rx, tx);
     char *down = strstr(line, "d:");
     char *up = strstr(line, "u:");
     *down_offset = down ? (int)(down - line) : -1;
@@ -2147,7 +2181,7 @@ int main(int argc, char **argv) {
                 history_add(&gpu_util, timestamp, average_gpu);
                 history_add(&ram, timestamp, system.ram_percent);
                 history_add(&swap, timestamp, system.swap_percent);
-                if (network.valid)
+                if (network.utilization_valid)
                     history_add(&network_history, timestamp, network.utilization_percent);
             }
             next_sample = now + interval;
