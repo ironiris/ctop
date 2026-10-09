@@ -1,15 +1,19 @@
-```
-# Compiled and build artifacts
+# Build artifacts
+ctop
 *.o
 *.obj
 *.out
 
-# Logs and temp files
+# Logs and temporary files
 *.log
 *.tmp
 
-# Environment
+# Local configuration and editor files
 .env
 .env.local
 .env.*
-```
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
