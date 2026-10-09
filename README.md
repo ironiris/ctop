@@ -6,6 +6,8 @@ C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 �
 
 [English README](README.en.md)
 
+![ctop 실행 화면](docs/images/ctop.png)
+
 ## 주요 기능
 
 - GPU 온도, 전력, VRAM, GPU 사용률 표시
