@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <termios.h>
 #include <time.h>
@@ -32,6 +33,7 @@
 #define MAX_SCREEN_COLS 2048
 #define MAX_OVERLAYS 8192
 #define MAX_NETWORK_INTERFACES 32
+#define MAX_DISK_DEVICES 128
 #define MAX_CLICK_TARGETS 32
 #define INPUT_BUFFER_SIZE 8192
 
@@ -146,6 +148,24 @@ typedef struct {
 } NetworkPrevious;
 
 typedef struct {
+    double read_bps;
+    double write_bps;
+    double total_bps;
+    unsigned long long used_bytes;
+    unsigned long long total_bytes;
+    bool capacity_valid;
+    bool valid;
+} DiskInfo;
+
+typedef struct {
+    char name[64];
+    unsigned long long read_sectors;
+    unsigned long long write_sectors;
+    double timestamp;
+    bool valid;
+} DiskPrevious;
+
+typedef struct {
     pid_t pid;
     unsigned long long process_ticks;
     unsigned long long total_ticks;
@@ -216,6 +236,8 @@ static CpuPrevious cpu_current[MAX_CPU_PROCESSES];
 static size_t cpu_current_count = 0;
 static NetworkPrevious network_previous[MAX_NETWORK_INTERFACES];
 static size_t network_previous_count = 0;
+static DiskPrevious disk_previous[MAX_DISK_DEVICES];
+static size_t disk_previous_count = 0;
 
 /* ------------------------------------------------------------------------- */
 /* Generic helpers                                                           */
@@ -285,6 +307,22 @@ static void format_network_rate(char *out, size_t size, double bps, bool valid) 
     } else {
         snprintf(out, size, "%.0f", bps);
     }
+}
+
+static void format_disk_rate(char *out, size_t size, double bytes_per_second) {
+    static const char *units[] = {"B/s", "K/s", "M/s", "G/s", "T/s"};
+    if (!isfinite(bytes_per_second) || bytes_per_second < 0.0) {
+        snprintf(out, size, "N/A");
+        return;
+    }
+    double value = bytes_per_second;
+    size_t unit = 0;
+    while (value >= 1024.0 && unit < ARRAY_LEN(units) - 1) {
+        value /= 1024.0;
+        unit++;
+    }
+    if (unit == 0 || value >= 100.0) snprintf(out, size, "%.0f%s", value, units[unit]);
+    else snprintf(out, size, "%.1f%s", value, units[unit]);
 }
 
 static void format_watts(char *out, size_t size, double value, bool valid) {
@@ -748,6 +786,91 @@ static bool read_network_info(NetworkInfo *network) {
     return true;
 }
 
+static DiskPrevious *find_disk_previous(const char *name) {
+    for (size_t i = 0; i < disk_previous_count; i++) {
+        if (strcmp(disk_previous[i].name, name) == 0) return &disk_previous[i];
+    }
+    if (disk_previous_count >= ARRAY_LEN(disk_previous)) return NULL;
+    DiskPrevious *previous = &disk_previous[disk_previous_count++];
+    memset(previous, 0, sizeof(*previous));
+    snprintf(previous->name, sizeof(previous->name), "%s", name);
+    return previous;
+}
+
+static bool ignored_disk_device(const char *name) {
+    return strncmp(name, "loop", 4) == 0 ||
+           strncmp(name, "ram", 3) == 0 ||
+           strncmp(name, "zram", 4) == 0;
+}
+
+static bool disk_device_is_partition(const char *name) {
+    char path[PATH_MAX];
+    int length = snprintf(path, sizeof(path), "/sys/class/block/%s/partition", name);
+    if (length < 0 || (size_t)length >= sizeof(path)) return false;
+    FILE *file = fopen(path, "r");
+    if (!file) return false;
+    fclose(file);
+    return true;
+}
+
+static bool read_disk_info(DiskInfo *disk) {
+    memset(disk, 0, sizeof(*disk));
+
+    struct statvfs filesystem;
+    if (statvfs("/", &filesystem) == 0 && filesystem.f_frsize > 0) {
+        unsigned long long block_size = (unsigned long long)filesystem.f_frsize;
+        unsigned long long total = (unsigned long long)filesystem.f_blocks * block_size;
+        unsigned long long free_bytes = (unsigned long long)filesystem.f_bfree * block_size;
+        disk->total_bytes = total;
+        disk->used_bytes = total > free_bytes ? total - free_bytes : 0;
+        disk->capacity_valid = total > 0;
+    }
+
+    FILE *file = fopen("/proc/diskstats", "r");
+    if (!file) return disk->capacity_valid;
+
+    double timestamp = monotonic_seconds();
+    bool have_valid_sample = false;
+    char line[512];
+    while (fgets(line, sizeof(line), file)) {
+        unsigned int major = 0, minor = 0;
+        char name[64];
+        unsigned long long statistics[11] = {0};
+        int fields = sscanf(line,
+                            " %u %u %63s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                            &major, &minor, name,
+                            &statistics[0], &statistics[1], &statistics[2], &statistics[3],
+                            &statistics[4], &statistics[5], &statistics[6], &statistics[7],
+                            &statistics[8], &statistics[9], &statistics[10]);
+        (void)major;
+        (void)minor;
+        if (fields < 10 || ignored_disk_device(name) || disk_device_is_partition(name)) continue;
+        unsigned long long read_sectors = statistics[2];
+        unsigned long long write_sectors = statistics[6];
+
+        DiskPrevious *previous = find_disk_previous(name);
+        bool valid = previous && previous->valid && timestamp > previous->timestamp &&
+                     read_sectors >= previous->read_sectors &&
+                     write_sectors >= previous->write_sectors;
+        if (valid) {
+            double elapsed = timestamp - previous->timestamp;
+            disk->read_bps += (double)(read_sectors - previous->read_sectors) * 512.0 / elapsed;
+            disk->write_bps += (double)(write_sectors - previous->write_sectors) * 512.0 / elapsed;
+            have_valid_sample = true;
+        }
+        if (previous) {
+            previous->read_sectors = read_sectors;
+            previous->write_sectors = write_sectors;
+            previous->timestamp = timestamp;
+            previous->valid = true;
+        }
+    }
+    fclose(file);
+    disk->total_bps = disk->read_bps + disk->write_bps;
+    disk->valid = have_valid_sample;
+    return disk->capacity_valid || disk->valid;
+}
+
 static double read_uptime(void) {
     FILE *file = fopen("/proc/uptime", "r");
     if (!file) return 0.0;
@@ -1047,6 +1170,10 @@ static void screen_flush(const Screen *screen, const Marker *markers, size_t mar
         }
 
         fprintf(stream, "\033[%d;1H", row + 1);
+        /* Erase before drawing.  Erasing after a full-width write can erase
+           the character in the terminal's last column while its wrap flag is
+           pending, making the right edge look one cell short. */
+        fputs("\033[K", stream);
         unsigned char current_attr = 255;
         for (int col = 0; col < screen->cols; col++) {
             size_t index = (size_t)row * (size_t)screen->cols + (size_t)col;
@@ -1060,12 +1187,11 @@ static void screen_flush(const Screen *screen, const Marker *markers, size_t mar
             else fputc(screen->cells[index], stream);
         }
         if (color_enabled) fputs("\033[0m", stream);
-        fputs("\033[K", stream);
     }
     free(overlay_at);
     for (size_t i = 0; i < marker_count; i++) {
         if (color_enabled) fputs("\033[1;36m", stream);
-        fprintf(stream, "\033[%d;%dH%s", markers[i].row + 1, screen->cols - 1,
+        fprintf(stream, "\033[%d;%dH%s", markers[i].row + 1, screen->cols,
                markers[i].expanded ? "\xE2\x96\xBC" : "\xE2\x96\xB6");
         if (color_enabled) fputs("\033[0m", stream);
     }
@@ -1104,10 +1230,24 @@ static void draw_rule(Screen *screen, int row, const char *title,
     }
 }
 
-static void draw_plot_graph(Screen *screen, int top, int left, int width,
-                            const History *history, int graph_rows) {
-    if (width < 12 || graph_rows <= 0) return;
-    int label_width = 4;
+static double history_peak_400(const History *history) {
+    if (!history || !history->count) return 0.0;
+    double reference = history_at(history, history->count - 1).timestamp;
+    double peak = 0.0;
+    for (size_t i = 0; i < history->count; i++) {
+        Sample sample = history_at(history, i);
+        double age = reference - sample.timestamp;
+        if (age >= 0.0 && age < 400.0 && isfinite(sample.value) && sample.value > peak)
+            peak = sample.value;
+    }
+    return peak;
+}
+
+static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
+                                   const History *history, int graph_rows,
+                                   double maximum, bool rate_axis) {
+    int label_width = rate_axis ? 8 : 4;
+    if (width < label_width + 3 || graph_rows <= 0) return;
     int axis_col = left + label_width;
     int plot_left = axis_col + 1;
     int plot_width = width - label_width - 1;
@@ -1119,26 +1259,37 @@ static void draw_plot_graph(Screen *screen, int top, int left, int width,
     if (plot_width > MAX_SCREEN_COLS) plot_width = MAX_SCREEN_COLS;
     compress_history(history, plot_width, values, valid, label_positions, labels, &label_count);
 
+    double scale = maximum > 0.0 && isfinite(maximum) ? maximum : 1.0;
     for (int row = 0; row < graph_rows; row++) {
-        int level = graph_rows == 1
-                        ? 0
-                        : (int)llround(100.0 * (double)(graph_rows - 1 - row) /
-                                      (double)(graph_rows - 1));
-        screen_putf_attr(screen, top + row, left, 4, ATTR_DIM, "%3d ", level);
+        double fraction = graph_rows == 1
+                              ? 0.0
+                              : (double)(graph_rows - 1 - row) / (double)(graph_rows - 1);
+        double level = maximum > 0.0 ? maximum * fraction : 0.0;
+        if (rate_axis) {
+            char axis_label[32];
+            format_disk_rate(axis_label, sizeof(axis_label), level);
+            screen_putf_attr(screen, top + row, left, label_width, ATTR_DIM,
+                             "%*s ", label_width - 1, axis_label);
+        } else {
+            screen_putf_attr(screen, top + row, left, label_width, ATTR_DIM,
+                             "%3d ", (int)llround(100.0 * fraction));
+        }
         screen_ch_attr(screen, top + row, axis_col, '|', ATTR_DIM);
     }
     int bottom_row = top + graph_rows - 1;
     for (int x = 0; x < plot_width; x++) {
-        screen_overlay(screen, bottom_row, plot_left + x, "-", ATTR_DIM);
+        screen_overlay(screen, bottom_row, plot_left + x, "_", ATTR_DIM);
         if (!valid[x]) continue;
 
         double value = values[x];
-        clamp_percent(&value);
-        double level = value / 100.0 * graph_rows;
+        double normalized = value / scale;
+        if (!isfinite(normalized) || normalized < 0.0) normalized = 0.0;
+        if (normalized > 1.0) normalized = 1.0;
+        double level = normalized * graph_rows;
         int full_rows = (int)floor(level);
         double fraction = level - full_rows;
         if (full_rows > graph_rows) full_rows = graph_rows;
-        unsigned char attr = load_attr(value);
+        unsigned char attr = load_attr(normalized * 100.0);
 
         for (int filled = 0; filled < full_rows; filled++)
             screen_overlay(screen, bottom_row - filled, plot_left + x, "█", attr);
@@ -1150,6 +1301,11 @@ static void draw_plot_graph(Screen *screen, int top, int left, int width,
         }
     }
     int footer = top + graph_rows;
+    if (rate_axis) {
+        /* The rate labels are right-aligned in a seven-cell field. Keep the
+           O in I/O directly below the s in the /s suffix. */
+        screen_put_attr(screen, footer, left + label_width - 4, "I/O", 3, ATTR_DIM);
+    }
     int last_label = label_count - 1;
     int now_x = plot_left + plot_width - (int)strlen(labels[last_label]);
     if (now_x < plot_left) now_x = plot_left;
@@ -1164,6 +1320,11 @@ static void draw_plot_graph(Screen *screen, int top, int left, int width,
         screen_put_attr(screen, footer, x, labels[i], screen->cols - x, ATTR_DIM);
         previous_end = x + label_length - 1;
     }
+}
+
+static void draw_plot_graph(Screen *screen, int top, int left, int width,
+                            const History *history, int graph_rows) {
+    draw_plot_graph_scaled(screen, top, left, width, history, graph_rows, 100.0, false);
 }
 
 static void draw_plot(Screen *screen, int top, int left, int width,
@@ -1184,10 +1345,29 @@ static void draw_plot(Screen *screen, int top, int left, int width,
     draw_plot_graph(screen, top + 1, left, width, history, GRAPH_ROWS);
 }
 
+static void draw_disk_plot(Screen *screen, int top, int left, int width,
+                           const History *history, const char *title,
+                           const char *title_info) {
+    if (width < 12) {
+        screen_put_attr(screen, top, left, title, width, ATTR_CYAN_BOLD);
+        screen_put_attr(screen, top + 1, left, "terminal too narrow", width, ATTR_DIM);
+        return;
+    }
+    screen_put_attr(screen, top, left, title, width, ATTR_CYAN_BOLD);
+    if (title_info && title[0]) {
+        int title_length = (int)strlen(title);
+        if (title_length + 1 < width)
+            screen_put_attr(screen, top, left + title_length + 1, title_info,
+                            width - title_length - 1, ATTR_TEXT_GREEN);
+    }
+    draw_plot_graph_scaled(screen, top + 1, left, width, history, GRAPH_ROWS,
+                           history_peak_400(history), true);
+}
+
 static void draw_load_bar(Screen *screen, int row, int start, double memory, double gpu) {
     int width = screen->cols - start;
-    if (width < 8) return;
-    int inner = width - 3;  /* outer bars and the center '+' */
+    if (width < 10) return;
+    int inner = width - 5;  /* two brackets and the center divider */
     int left_width = inner / 2;
     int right_width = inner - left_width;
     clamp_percent(&memory);
@@ -1201,27 +1381,26 @@ static void draw_load_bar(Screen *screen, int row, int start, double memory, dou
     unsigned char memory_attr = load_attr(memory);
     unsigned char gpu_attr = load_attr(gpu);
 
-    screen_ch_attr(screen, row, start, '|', ATTR_DIM);
-    screen_ch_attr(screen, row, screen->cols - 1, '|', ATTR_DIM);
-    int divider = start + 1 + left_width;
-    if (memory_cells == 0 && gpu_cells == 0) {
-        screen_ch_attr(screen, row, divider - 1, '<', ATTR_DIM);
-        screen_ch_attr(screen, row, divider, '+', ATTR_DIM);
-        screen_ch_attr(screen, row, divider + 1, '>', ATTR_DIM);
-        return;
-    }
+    int divider = start + 2 + left_width;
+    screen_ch_attr(screen, row, start, '[', ATTR_DIM);
+    screen_ch_attr(screen, row, start + 1 + left_width, ']', ATTR_NORMAL);
+    screen_overlay(screen, row, divider, "\xE2\x94\x82", ATTR_CYAN_BOLD);
+    screen_ch_attr(screen, row, divider + 1, '[', ATTR_NORMAL);
+    screen_ch_attr(screen, row, screen->cols - 1, ']', ATTR_DIM);
 
     for (int i = 0; i < left_width; i++) {
-        int first_filled = left_width - memory_cells;
-        char cell = i < first_filled ? ' ' : i == first_filled ? '<' : '-';
-        unsigned char attr = i < first_filled ? ATTR_NORMAL : memory_attr;
-        screen_ch_attr(screen, row, start + 1 + i, cell, attr);
+        bool filled = i >= left_width - memory_cells;
+        if (filled)
+            screen_overlay(screen, row, start + 1 + i, "\xE2\x96\x88", memory_attr);
+        else
+            screen_ch_attr(screen, row, start + 1 + i, ' ', ATTR_NORMAL);
     }
-    screen_ch_attr(screen, row, divider, '+', ATTR_DIM);
     for (int i = 0; i < right_width; i++) {
-        char cell = i < gpu_cells - 1 ? '-' : i == gpu_cells - 1 ? '>' : ' ';
-        unsigned char attr = i < gpu_cells ? gpu_attr : ATTR_NORMAL;
-        screen_ch_attr(screen, row, divider + 1 + i, cell, attr);
+        bool filled = i < gpu_cells;
+        if (filled)
+            screen_overlay(screen, row, divider + 2 + i, "\xE2\x96\x88", gpu_attr);
+        else
+            screen_ch_attr(screen, row, divider + 2 + i, ' ', ATTR_NORMAL);
     }
 }
 
@@ -1238,8 +1417,19 @@ static void draw_gpu_status(Screen *screen, int top, const GpuInfo *gpus, int gp
     screen_put_attr(screen, top, 34, "POWER DRAW/LIMIT", 16, ATTR_CYAN_BOLD);
     screen_put_attr(screen, top, 52, "VRAM USED/TOTAL", 22, ATTR_CYAN_BOLD);
     screen_put_attr(screen, top, 76, "GPU", 8, ATTR_CYAN_BOLD);
-    if (screen->cols - bar_start >= 8)
-        screen_put_attr(screen, top, bar_start, "LOAD: VRAM <-  +  -> GPU", screen->cols - bar_start, ATTR_CYAN_BOLD);
+    int load_width = screen->cols - bar_start;
+    if (load_width >= 20) {
+        char load_header[MAX_SCREEN_COLS];
+        memset(load_header, ' ', (size_t)load_width);
+        load_header[load_width] = '\0';
+        int divider = (load_width - 5) / 2 + 2;
+        memcpy(load_header, "100%", 4);
+        memcpy(load_header + divider - 1 - 4, "VRAM", 4);
+        memcpy(load_header + divider + 2, "GPU", 3);
+        memcpy(load_header + load_width - 4, "100%", 4);
+        screen_put_attr(screen, top, bar_start, load_header, load_width, ATTR_CYAN_BOLD);
+        screen_overlay(screen, top, bar_start + divider, "\xE2\x94\x82", ATTR_CYAN_BOLD);
+    }
 
     for (int i = 0; i < gpu_count; i++) {
         const GpuInfo *gpu = &gpus[i];
@@ -1465,6 +1655,35 @@ static void format_network_line(const NetworkInterfaceInfo *interface,
     *up_offset = up ? (int)(up - line) : -1;
 }
 
+static void format_network_line_compact(const NetworkInterfaceInfo *interface,
+                                        bool include_name, char *line, size_t line_size,
+                                        int *down_offset, int *up_offset) {
+    char capacity[32], load[32], total[32], rx[32], tx[32];
+    bool valid = interface && interface->valid;
+    bool capacity_valid = interface && interface->capacity_valid;
+    bool utilization_valid = interface && interface->utilization_valid;
+    format_network_rate(capacity, sizeof(capacity),
+                        interface ? interface->capacity_bps : 0.0,
+                        capacity_valid);
+    if (utilization_valid)
+        snprintf(load, sizeof(load), "%.0f%%", interface->utilization_percent);
+    else
+        snprintf(load, sizeof(load), "N/A");
+    format_network_rate(total, sizeof(total), interface ? interface->total_bps : 0.0, valid);
+    format_network_rate(rx, sizeof(rx), interface ? interface->rx_bps : 0.0, valid);
+    format_network_rate(tx, sizeof(tx), interface ? interface->tx_bps : 0.0, valid);
+    const char *name = interface && interface->name[0] ? interface->name : "N/A";
+    char prefix[96];
+    if (include_name) snprintf(prefix, sizeof(prefix), "NETWORK(%s)", name);
+    else snprintf(prefix, sizeof(prefix), "NETWORK");
+    snprintf(line, line_size, "%s %s(%s) T:%s d:%s u:%s",
+             prefix, capacity, load, total, rx, tx);
+    char *down = strstr(line, "d:");
+    char *up = strstr(line, "u:");
+    *down_offset = down ? (int)(down - line) : -1;
+    *up_offset = up ? (int)(up - line) : -1;
+}
+
 static void draw_network_arrows(Screen *screen, int row, int left, int width,
                                 int down_offset, int up_offset, unsigned char attr) {
     if (down_offset >= 0 && left + down_offset < left + width)
@@ -1478,11 +1697,17 @@ static void draw_network_line(Screen *screen, int row, int left, int width,
                               bool include_name) {
     char line[512];
     int down_offset, up_offset;
-    format_network_line(interface, include_name, line, sizeof(line), &down_offset, &up_offset);
+    if (width < 48)
+        format_network_line_compact(interface, include_name, line, sizeof(line),
+                                    &down_offset, &up_offset);
+    else
+        format_network_line(interface, include_name, line, sizeof(line),
+                            &down_offset, &up_offset);
     bool valid = interface && interface->valid;
     unsigned char info_attr = valid ? ATTR_TEXT_GREEN : ATTR_DIM;
     screen_put_attr(screen, row, left, line, width, info_attr);
     char *separator = strstr(line, " | TOTAL:");
+    if (!separator) separator = strstr(line, " T:");
     int cyan_length = separator ? (int)(separator - line) : (int)strlen(line);
     screen_put_attr(screen, row, left, line, cyan_length, ATTR_CYAN_BOLD);
     draw_network_arrows(screen, row, left, width, down_offset, up_offset, info_attr);
@@ -1495,9 +1720,10 @@ static void draw_network_graph(Screen *screen, int top, int left, int width,
 
 static void draw_system(Screen *screen, int top, const SystemInfo *system,
                         const History *ram, const History *swap,
-                        const History *network_history,
-                        const NetworkInfo *network, bool collapsed) {
+                        const History *disk_history, const History *network_history,
+                        const DiskInfo *disk, const NetworkInfo *network, bool collapsed) {
     char ram_title[32], swap_title[32], ram_info[64], swap_info[64];
+    char disk_title[32], disk_info[64];
     snprintf(ram_title, sizeof(ram_title), "RAM(%.0f%%)", system->ram_percent);
     snprintf(ram_info, sizeof(ram_info), "%.1fG/%.1fG",
              (double)system->ram_used / (1024.0 * 1024.0 * 1024.0),
@@ -1506,46 +1732,69 @@ static void draw_system(Screen *screen, int top, const SystemInfo *system,
     snprintf(swap_info, sizeof(swap_info), "%.1fG/%.1fG",
              (double)system->swap_used / (1024.0 * 1024.0 * 1024.0),
              (double)system->swap_total / (1024.0 * 1024.0 * 1024.0));
+    if (disk && disk->capacity_valid && disk->total_bytes) {
+        double used_percent = 100.0 * (double)disk->used_bytes / (double)disk->total_bytes;
+        snprintf(disk_title, sizeof(disk_title), "DISK(%.0f%%)", used_percent);
+        snprintf(disk_info, sizeof(disk_info), "%.1fGB/%.1fGB",
+                 (double)disk->used_bytes / (1024.0 * 1024.0 * 1024.0),
+                 (double)disk->total_bytes / (1024.0 * 1024.0 * 1024.0));
+    } else {
+        snprintf(disk_title, sizeof(disk_title), "DISK(N/A)");
+        snprintf(disk_info, sizeof(disk_info), "N/A/N/A");
+    }
 
     int gap = 2;
-    int available = screen->cols - 2 * gap;
-    int network_width = available * 57 / 100;
-    if (network_width < 12) network_width = 12;
-    if (network_width > available - 2) network_width = available - 2;
-    int memory_width = available - network_width;
+    int old_available = screen->cols - 2 * gap;
+    int old_network_width = old_available * 57 / 100;
+    if (old_network_width < 12) old_network_width = 12;
+    if (old_network_width > old_available - 2) old_network_width = old_available - 2;
+    int network_width = old_network_width / 2;
+    int disk_width = old_network_width - network_width;
+    int panel_space = screen->cols - 3 * gap;
+    int max_disk_width = panel_space - network_width - 24; /* keep RAM/SWAP at 12 cells */
+    if (max_disk_width > disk_width) {
+        disk_width = max_disk_width < 35 ? max_disk_width : 35;
+    }
+    int memory_width = panel_space - disk_width - network_width;
     int left_width = memory_width / 2;
     int middle_width = memory_width - left_width;
     int middle_left = left_width + gap;
-    int right_left = middle_left + middle_width + gap;
-    int right_width = screen->cols - right_left;
+    int disk_left = memory_width + 2 * gap;
+    int network_left = disk_left + disk_width + gap;
+    int right_width = screen->cols - network_left;
     int line_count = network_line_count(network);
     bool include_name = line_count > 1;
 
     if (collapsed) {
-        char ram_summary[128], swap_summary[128];
+        char ram_summary[128], swap_summary[128], disk_summary[128];
         snprintf(ram_summary, sizeof(ram_summary), "%s %s", ram_title, ram_info);
         snprintf(swap_summary, sizeof(swap_summary), "%s %s", swap_title, swap_info);
+        snprintf(disk_summary, sizeof(disk_summary), "%s %s", disk_title, disk_info);
         screen_put_attr(screen, top, 0, ram_summary, left_width, text_load_attr(system->ram_percent));
         screen_put_attr(screen, top, middle_left, swap_summary, middle_width, text_load_attr(system->swap_percent));
+        screen_put_attr(screen, top, disk_left, disk_summary, disk_width,
+                        disk && disk->capacity_valid ? ATTR_TEXT_GREEN : ATTR_DIM);
         for (int i = 0; i < line_count; i++) {
             const NetworkInterfaceInfo *interface = network->interface_count > 0
                                                          ? &network->interfaces[i]
                                                          : NULL;
-            draw_network_line(screen, top + i, right_left, right_width, interface, include_name);
+            draw_network_line(screen, top + i, network_left, right_width, interface, include_name);
         }
         return;
     }
     draw_plot(screen, top, 0, left_width, ram, ram_title, ram_info);
     draw_plot(screen, top, middle_left, middle_width, swap, swap_title, swap_info);
+    draw_disk_plot(screen, top, disk_left, disk_width, disk_history,
+                   disk_title, disk_info);
     for (int i = 0; i < line_count; i++) {
         const NetworkInterfaceInfo *interface = network->interface_count > 0
                                                      ? &network->interfaces[i]
                                                      : NULL;
-        draw_network_line(screen, top + i, right_left, right_width, interface, include_name);
+        draw_network_line(screen, top + i, network_left, right_width, interface, include_name);
     }
     int graph_rows = network_graph_rows(line_count);
     if (graph_rows > 0)
-        draw_network_graph(screen, top + line_count, right_left, right_width,
+        draw_network_graph(screen, top + line_count, network_left, right_width,
                            network_history, graph_rows);
 }
 
@@ -1592,7 +1841,7 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
     draw_clickable_text(screen, ui, 2, &column, "q:quit  ", 0, 1, 0, 1, 'q');
     draw_clickable_text(screen, ui, 2, &column, "h:help  ", 0, 1, 0, 1, 'h');
     draw_clickable_text(screen, ui, 2, &column, "g:GPU graph  ", 0, 1, 0, 1, 'g');
-    draw_clickable_text(screen, ui, 2, &column, "m:RAM/Swap + network  ", 0, 1, 0, 1, 'm');
+    draw_clickable_text(screen, ui, 2, &column, "m:RAM/Swap/Disk + network  ", 0, 1, 0, 1, 'm');
     draw_clickable_text(screen, ui, 2, &column, "space:pause  ", 0, 5, 0, 5, ' ');
     int interval_column = column;
     draw_clickable_text(screen, ui, 2, &column, "+/-:interval  ", 0, 1, 0, 1, '+');
@@ -1615,7 +1864,8 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
 static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
                           const SystemInfo *system, const History *vram,
                           const History *gpu_util, const History *ram,
-                          const History *swap, const History *network_history,
+                          const History *swap, const History *disk_history,
+                          const History *network_history, const DiskInfo *disk,
                           const NetworkInfo *network, UiState *ui,
                           const char *driver, const char *cuda_library,
                           const char *cuda_runtime, int cuda_driver,
@@ -1630,7 +1880,7 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
             "q or Esc     quit",
             "h            show/hide this help",
             "click g       collapse/expand GPU history",
-            "click m       collapse/expand RAM/Swap/network section",
+            "click m       collapse/expand RAM/Swap/Disk/network section",
             "Space        pause/resume sampling",
             "+ / -        increase/decrease refresh interval",
             "j            select next GPU process",
@@ -1685,7 +1935,8 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
 
     draw_rule(screen, y, "SYSTEM", true, !ui->system_collapsed, markers, &marker_count);
     y++;
-    draw_system(screen, y, system, ram, swap, network_history, network, ui->system_collapsed);
+    draw_system(screen, y, system, ram, swap, disk_history, network_history,
+                disk, network, ui->system_collapsed);
     y += system_content_rows(network->interface_count, ui->system_collapsed);
 
     draw_rule(screen, y, "GPU PROCESSES", false, true, markers, &marker_count);
@@ -1805,7 +2056,7 @@ static unsigned char clickable_key_at(const UiState *ui, int x, int y) {
 
 static void handle_key(unsigned char key, UiState *ui, bool *paused, bool *help_visible,
                        double *interval, History *vram, History *gpu,
-                       History *ram, History *swap, History *network,
+                       History *ram, History *swap, History *disk, History *network,
                        const GpuInfo *gpus, int gpu_count) {
     if (ui->kill_prompt) {
         if (key == 'y' || key == 'Y') {
@@ -1845,6 +2096,7 @@ static void handle_key(unsigned char key, UiState *ui, bool *paused, bool *help_
         history_clear(gpu);
         history_clear(ram);
         history_clear(swap);
+        history_clear(disk);
         history_clear(network);
         ui->selected_gpu = -1;
         ui->selected_pid = 0;
@@ -1865,15 +2117,16 @@ static void handle_key(unsigned char key, UiState *ui, bool *paused, bool *help_
 
 static void dispatch_key(unsigned char key, UiState *ui, bool *paused, bool *help_visible,
                          double *interval, History *vram, History *gpu,
-                         History *ram, History *swap, History *network,
+                         History *ram, History *swap, History *disk, History *network,
                          const GpuInfo *gpus, int gpu_count, bool *quit) {
     if (key == 'q' || key == 'Q') *quit = true;
-    else handle_key(key, ui, paused, help_visible, interval, vram, gpu, ram, swap, network, gpus, gpu_count);
+    else handle_key(key, ui, paused, help_visible, interval, vram, gpu, ram, swap,
+                    disk, network, gpus, gpu_count);
 }
 
 static void parse_input(InputBuffer *input, UiState *ui, bool *paused, bool *help_visible,
                         double *interval, History *vram, History *gpu,
-                        History *ram, History *swap, History *network,
+                        History *ram, History *swap, History *disk, History *network,
                         const GpuInfo *gpus, int cols, int gpu_count,
                         bool *quit, bool *mouse_button_down) {
     size_t position = 0;
@@ -1881,7 +2134,7 @@ static void parse_input(InputBuffer *input, UiState *ui, bool *paused, bool *hel
         unsigned char *data = (unsigned char *)input->data;
         if (data[position] != 0x1b) {
             dispatch_key(data[position], ui, paused, help_visible, interval,
-                         vram, gpu, ram, swap, network, gpus, gpu_count, quit);
+                         vram, gpu, ram, swap, disk, network, gpus, gpu_count, quit);
             position++;
             continue;
         }
@@ -1905,12 +2158,12 @@ static void parse_input(InputBuffer *input, UiState *ui, bool *paused, bool *hel
                     if (pressed) {
                         if (!*mouse_button_down)
                             dispatch_key(clicked_key, ui, paused, help_visible, interval,
-                                         vram, gpu, ram, swap, network, gpus, gpu_count, quit);
+                                         vram, gpu, ram, swap, disk, network, gpus, gpu_count, quit);
                         *mouse_button_down = true;
                     } else {
                         if (!*mouse_button_down)
                             dispatch_key(clicked_key, ui, paused, help_visible, interval,
-                                         vram, gpu, ram, swap, network, gpus, gpu_count, quit);
+                                         vram, gpu, ram, swap, disk, network, gpus, gpu_count, quit);
                         *mouse_button_down = false;
                     }
                 } else {
@@ -1933,7 +2186,7 @@ static void parse_input(InputBuffer *input, UiState *ui, bool *paused, bool *hel
                 if (clicked_key) {
                     if (!*mouse_button_down)
                         dispatch_key(clicked_key, ui, paused, help_visible, interval,
-                                     vram, gpu, ram, swap, network, gpus, gpu_count, quit);
+                                     vram, gpu, ram, swap, disk, network, gpus, gpu_count, quit);
                     *mouse_button_down = true;
                 } else {
                     handle_mouse(ui, gpus, screen_x, screen_y, cols, gpu_count,
@@ -1956,7 +2209,8 @@ static void parse_input(InputBuffer *input, UiState *ui, bool *paused, bool *hel
 /* Main                                                                     */
 
 static int collect_snapshot(GpuInfo *gpus, int *gpu_count, SystemInfo *system,
-                            NetworkInfo *network, unsigned long long *total_ticks) {
+                            DiskInfo *disk, NetworkInfo *network,
+                            unsigned long long *total_ticks) {
     unsigned int count = 0;
     nvmlReturn_t result = nvmlDeviceGetCount_v2(&count);
     if (result != NVML_SUCCESS) return -1;
@@ -1997,6 +2251,7 @@ static int collect_snapshot(GpuInfo *gpus, int *gpu_count, SystemInfo *system,
     *gpu_count = (int)count;
 
     if (!read_system_info(system)) return -2;
+    if (!read_disk_info(disk)) memset(disk, 0, sizeof(*disk));
     if (!read_network_info(network)) memset(network, 0, sizeof(*network));
     if (!read_cpu_total(total_ticks)) *total_ticks = 0;
     double uptime = read_uptime();
@@ -2082,13 +2337,15 @@ int main(int argc, char **argv) {
     debug_log("driver=%s cuda_library=%s cuda_runtime=%s cuda_driver=%d",
               driver, cuda_library, cuda_runtime, cuda_driver);
 
-    History vram = {0}, gpu_util = {0}, ram = {0}, swap = {0}, network_history = {0};
+    History vram = {0}, gpu_util = {0}, ram = {0}, swap = {0};
+    History disk_history = {0}, network_history = {0};
     if (!history_init(&vram) || !history_init(&gpu_util) || !history_init(&ram) ||
-        !history_init(&swap) || !history_init(&network_history)) {
+        !history_init(&swap) || !history_init(&disk_history) ||
+        !history_init(&network_history)) {
         debug_log("startup failed: history allocation");
         fprintf(stderr, "history allocation failed\n");
         history_free(&vram); history_free(&gpu_util); history_free(&ram);
-        history_free(&swap); history_free(&network_history);
+        history_free(&swap); history_free(&disk_history); history_free(&network_history);
         nvmlShutdown();
         return 1;
     }
@@ -2097,7 +2354,7 @@ int main(int argc, char **argv) {
         debug_log("startup failed: could not enter raw terminal mode (%s)", strerror(errno));
         fprintf(stderr, "could not enter raw terminal mode\n");
         history_free(&vram); history_free(&gpu_util); history_free(&ram);
-        history_free(&swap); history_free(&network_history);
+        history_free(&swap); history_free(&disk_history); history_free(&network_history);
         nvmlShutdown();
         return 1;
     }
@@ -2110,7 +2367,7 @@ int main(int argc, char **argv) {
         debug_log("startup failed: screen allocation rows=%d cols=%d", rows, cols);
         restore_terminal();
         history_free(&vram); history_free(&gpu_util); history_free(&ram);
-        history_free(&swap); history_free(&network_history);
+        history_free(&swap); history_free(&disk_history); history_free(&network_history);
         nvmlShutdown();
         return 1;
     }
@@ -2120,12 +2377,13 @@ int main(int argc, char **argv) {
         screen_free(&screen);
         restore_terminal();
         history_free(&vram); history_free(&gpu_util); history_free(&ram);
-        history_free(&swap); history_free(&network_history);
+        history_free(&swap); history_free(&disk_history); history_free(&network_history);
         nvmlShutdown();
         return 1;
     }
     int gpu_count = 0;
     SystemInfo system = {0};
+    DiskInfo disk = {0};
     NetworkInfo network = {0};
     unsigned long long total_ticks = 0;
     UiState ui = {0};
@@ -2150,7 +2408,8 @@ int main(int argc, char **argv) {
         if (!paused && now >= next_sample) {
             double sample_started = monotonic_seconds();
             debug_log("snapshot begin");
-            int result = collect_snapshot(gpus, &gpu_count, &system, &network, &total_ticks);
+            int result = collect_snapshot(gpus, &gpu_count, &system, &disk,
+                                          &network, &total_ticks);
             double sample_duration = monotonic_seconds() - sample_started;
             if (result != 0) {
                 debug_log("snapshot failed result=%d duration=%.3fs", result, sample_duration);
@@ -2181,6 +2440,8 @@ int main(int argc, char **argv) {
                 history_add(&gpu_util, timestamp, average_gpu);
                 history_add(&ram, timestamp, system.ram_percent);
                 history_add(&swap, timestamp, system.swap_percent);
+                if (disk.valid)
+                    history_add(&disk_history, timestamp, disk.total_bps);
                 if (network.utilization_valid)
                     history_add(&network_history, timestamp, network.utilization_percent);
             }
@@ -2212,7 +2473,8 @@ int main(int argc, char **argv) {
             screen_putf(&screen, 3, 0, screen.cols, "ERROR: %s", error);
         } else {
             render_screen(&screen, gpus, gpu_count, &system, &vram, &gpu_util, &ram, &swap,
-                          &network_history, &network, &ui, driver, cuda_library, cuda_runtime, cuda_driver,
+                          &disk_history, &network_history, &disk, &network, &ui,
+                          driver, cuda_library, cuda_runtime, cuda_driver,
                           interval, paused, help_visible);
         }
         if (screen.rows >= 13 && screen.cols >= 76 && !error[0] && !help_visible) {
@@ -2246,8 +2508,9 @@ int main(int argc, char **argv) {
                 debug_log("terminal input bytes=%zd", read_count);
                 input.length += (size_t)read_count;
                 parse_input(&input, &ui, &paused, &help_visible, &interval,
-                            &vram, &gpu_util, &ram, &swap, &network_history,
-                            gpus, cols, gpu_count, &quit, &mouse_button_down);
+                            &vram, &gpu_util, &ram, &swap, &disk_history,
+                            &network_history, gpus, cols, gpu_count, &quit,
+                            &mouse_button_down);
                 next_sample = monotonic_seconds() + (paused ? interval : 0.0);
                 next_clock = monotonic_seconds() + 1.0;
                 needs_render = true;
@@ -2268,6 +2531,7 @@ int main(int argc, char **argv) {
     history_free(&gpu_util);
     history_free(&ram);
     history_free(&swap);
+    history_free(&disk_history);
     history_free(&network_history);
     restore_terminal();
     nvmlShutdown();
