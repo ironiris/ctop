@@ -1246,7 +1246,9 @@ static double history_peak_400(const History *history) {
 static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
                                    const History *history, int graph_rows,
                                    double maximum, bool rate_axis) {
-    int label_width = rate_axis ? 8 : 4;
+    /* Use one common Y-axis width so all four graph plots have the same
+       horizontal geometry. */
+    int label_width = 8;
     if (width < label_width + 3 || graph_rows <= 0) return;
     int axis_col = left + label_width;
     int plot_left = axis_col + 1;
@@ -1272,7 +1274,7 @@ static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
                              "%*s ", label_width - 1, axis_label);
         } else {
             screen_putf_attr(screen, top + row, left, label_width, ATTR_DIM,
-                             "%3d ", (int)llround(100.0 * fraction));
+                             "%7d ", (int)llround(100.0 * fraction));
         }
         screen_ch_attr(screen, top + row, axis_col, '|', ATTR_DIM);
     }
@@ -1744,22 +1746,16 @@ static void draw_system(Screen *screen, int top, const SystemInfo *system,
     }
 
     int gap = 2;
-    int old_available = screen->cols - 2 * gap;
-    int old_network_width = old_available * 57 / 100;
-    if (old_network_width < 12) old_network_width = 12;
-    if (old_network_width > old_available - 2) old_network_width = old_available - 2;
-    int network_width = old_network_width / 2;
-    int disk_width = old_network_width - network_width;
+    /* Use one common Y-axis width so RAM, SWAP, DISK, and NETWORK panels
+       have equal graph widths (within one cell for odd terminal widths). */
     int panel_space = screen->cols - 3 * gap;
-    int max_disk_width = panel_space - network_width - 24; /* keep RAM/SWAP at 12 cells */
-    if (max_disk_width > disk_width) {
-        disk_width = max_disk_width < 35 ? max_disk_width : 35;
-    }
-    int memory_width = panel_space - disk_width - network_width;
-    int left_width = memory_width / 2;
-    int middle_width = memory_width - left_width;
+    int panel_width = panel_space / 4;
+    int remainder = panel_space % 4;
+    int left_width = panel_width + (remainder > 0 ? 1 : 0);
+    int middle_width = panel_width + (remainder > 1 ? 1 : 0);
+    int disk_width = panel_width + (remainder > 2 ? 1 : 0);
     int middle_left = left_width + gap;
-    int disk_left = memory_width + 2 * gap;
+    int disk_left = middle_left + middle_width + gap;
     int network_left = disk_left + disk_width + gap;
     int right_width = screen->cols - network_left;
     int line_count = network_line_count(network);
