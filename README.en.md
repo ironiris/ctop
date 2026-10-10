@@ -1,6 +1,6 @@
 # ctop
 
-A lightweight terminal dashboard for NVIDIA GPU, system memory, process, and network monitoring.
+A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network, and disk I/O monitoring.
 
 `ctop` is a single C11 program with no curses dependency. It reads GPU data through NVML, system data from Linux `/proc` interfaces, and link speeds from `/sys`.
 
@@ -8,6 +8,8 @@ A lightweight terminal dashboard for NVIDIA GPU, system memory, process, and net
 
 - GPU temperature, power, VRAM, utilization, and GPU process information
 - RAM and SWAP usage with history graphs
+- Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
+- Disk usage shown as `DISK(XX%) XXX.XGB/YYY.YGB`
 - VRAM and GPU utilization history graphs
 - Network throughput in bit/s with per-interface link-speed utilization
 - RX/TX indicators and per-interface network rows
@@ -35,7 +37,7 @@ The build script defaults to CUDA 12.8 at `/usr/local/cuda-12.8`. A different CU
 - An interactive Linux terminal
 - A terminal at least 76 columns by 13 rows
 
-The program also reads `/proc/meminfo`, `/proc/net/dev`, `/proc/stat`, `/proc/uptime`, and `/sys/class/net/<interface>/speed`.
+The program also reads `/proc/meminfo`, `/proc/net/dev`, `/proc/stat`, `/proc/uptime`, `/proc/diskstats`, and `/sys/class/net/<interface>/speed`.
 
 ## Installing prerequisites
 
@@ -102,6 +104,16 @@ k / K                     send SIGTERM confirmation to the selected process
 ```
 
 The top-bar actions can also be clicked when the terminal supports SGR mouse input.
+
+## Disk display
+
+The disk information in the SYSTEM section uses this format:
+
+```text
+DISK(XX%) XXX.XGB/YYY.YGB
+```
+
+`XXX.XGB` is the current used capacity and `YYY.YGB` is the total capacity. The I/O graph shows combined read and write throughput for block devices, excluding partitions and `loop*`, `ram*`, and `zram*` devices. Its Y-axis is scaled to the maximum peak measured during the most recent 400 seconds rather than a 0–100% range. Capacity is measured for the root filesystem (`/`).
 
 ## Notes
 
