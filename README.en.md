@@ -9,7 +9,6 @@ A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network
 - GPU temperature, power, VRAM, utilization, and GPU process information
 - RAM and SWAP usage with history graphs
 - Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
-- Disk usage shown as `DISK(XX%) XXX.XGB/YYY.YGB`
 - VRAM and GPU utilization history graphs
 - Network throughput in bit/s with per-interface link-speed utilization
 - RX/TX indicators and per-interface network rows
