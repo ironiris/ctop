@@ -1495,9 +1495,9 @@ static void draw_processes(Screen *screen, int top, const GpuInfo *gpus, int gpu
     screen_put_attr(screen, top, 7, "PID", 8, ATTR_CYAN_BOLD);
     screen_put_attr(screen, top, 15, "USER", 10, ATTR_CYAN_BOLD);
     screen_put_attr(screen, top, 25, "GPU-MEM", 11, ATTR_CYAN_BOLD);
-    screen_put_attr(screen, top, 36, "%GPU-LOAD", 10, ATTR_CYAN_BOLD);
-    screen_put_attr(screen, top, 46, "CPU AVG", 8, ATTR_CYAN_BOLD);
-    screen_put_attr(screen, top, 54, "%MEM", 7, ATTR_CYAN_BOLD);
+    screen_put_attr(screen, top, 36, "GPU-LOAD", 10, ATTR_CYAN_BOLD);
+    screen_put_attr(screen, top, 46, "CPU-AVG", 8, ATTR_CYAN_BOLD);
+    screen_put_attr(screen, top, 54, "MEM", 7, ATTR_CYAN_BOLD);
     screen_put_attr(screen, top, 61, "TIME", 10, ATTR_CYAN_BOLD);
     screen_put_attr(screen, top, 71, "COMMAND", screen->cols - 71, ATTR_CYAN_BOLD);
 
@@ -1514,12 +1514,12 @@ static void draw_processes(Screen *screen, int top, const GpuInfo *gpus, int gpu
             screen_putf(screen, row, 7, 8, "%-7ld", (long)p->pid);
             screen_put(screen, row, 15, p->user, 10);
             screen_put(screen, row, 25, memory, 9);
-            if (p->sm_valid) screen_putf_attr(screen, row, 36, 5, text_load_attr(p->sm), "%-5.1f", p->sm);
-            else screen_put_attr(screen, row, 36, "--", 5, ATTR_DIM);
-            if (p->cpu_valid) screen_putf(screen, row, 46, 5, "%-5.1f", p->cpu);
-            else screen_put_attr(screen, row, 46, "--", 5, ATTR_DIM);
-            if (p->memory_valid) screen_putf(screen, row, 54, 5, "%-5.1f", p->memory);
-            else screen_put_attr(screen, row, 54, "--", 5, ATTR_DIM);
+            if (p->sm_valid) screen_putf_attr(screen, row, 36, 10, text_load_attr(p->sm), "%5.1f%%", p->sm);
+            else screen_put_attr(screen, row, 36, "--", 10, ATTR_DIM);
+            if (p->cpu_valid) screen_putf(screen, row, 46, 8, "%5.1f%%", p->cpu);
+            else screen_put_attr(screen, row, 46, "--", 8, ATTR_DIM);
+            if (p->memory_valid) screen_putf(screen, row, 54, 7, "%5.1f%%", p->memory);
+            else screen_put_attr(screen, row, 54, "--", 7, ATTR_DIM);
             screen_put(screen, row, 61, elapsed, 10);
             screen_put(screen, row, 71, p->command, screen->cols - 71);
             bool selected = ui && ui->selected_gpu == gpus[i].index && ui->selected_pid == p->pid;
@@ -1700,7 +1700,7 @@ static void format_network_line_compact(const NetworkInterfaceInfo *interface,
     char prefix[96];
     if (include_name) snprintf(prefix, sizeof(prefix), "NET(%s)", name);
     else snprintf(prefix, sizeof(prefix), "NET");
-    snprintf(line, line_size, "%s %s(%s) T:%s d:%s u:%s",
+    snprintf(line, line_size, "%s %s(%s) Tot:%s d:%s u:%s",
              prefix, capacity, load, total, rx, tx);
     char *down = strstr(line, "d:");
     char *up = strstr(line, "u:");

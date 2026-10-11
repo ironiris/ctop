@@ -6,7 +6,8 @@ A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network
 
 ## Features
 
-- GPU temperature, power, VRAM, utilization, and GPU process information
+- GPU temperature, power, VRAM, and utilization
+- GPU process table with `GPU-LOAD`, `CPU-AVG`, and `MEM` percentage columns
 - RAM and SWAP usage with history graphs
 - Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
 - VRAM and GPU utilization history graphs
@@ -116,4 +117,4 @@ DISK(XX%) XXX.XGB/YYY.YGB
 
 ## Notes
 
-Network rates are calculated from interface byte counters and converted to bits per second. The displayed utilization uses each interface's link speed from `/sys/class/net/<interface>/speed`; interfaces without a readable speed show `N/A` utilization. Traffic from Docker containers leaving the host is still visible through the host's physical interface; the dashboard does not provide per-container accounting.
+Network rates are calculated from interface byte counters and converted to bits per second. Compact interface rows abbreviate total throughput as `Tot:`; arrows indicate receive and transmit rates. The displayed utilization uses each interface's link speed from `/sys/class/net/<interface>/speed`; interfaces without a readable speed show `N/A` utilization. Traffic from Docker containers leaving the host is still visible through the host's physical interface; the dashboard does not provide per-container accounting.
