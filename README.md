@@ -127,7 +127,7 @@ CUDA_ROOT=/usr/local/cuda ./build-ctop.sh
 ## 키 조작
 
 ```text
-q                         종료
+q / Esc                   종료
 h                         도움말 표시/숨김
 g                         GPU 히스토리 접기/펼치기
 m                         SYSTEM 섹션 접기/펼치기
@@ -155,7 +155,7 @@ DISK(XX%) XXX.XGB/YYY.YGB
 네트워크 카운터의 byte 차이를 bit로 변환하여 표시합니다.
 
 ```text
-NETWORK | <링크속도>(사용률) | TOTAL:처리량 | ▼:수신 | ▲:송신
+NET | <링크속도>(사용률) | TOTAL:처리량 | ▼:수신 | ▲:송신
 ```
 
 `/sys/class/net/<interface>/speed`에서 인터페이스별 링크 속도를 읽어 사용률을 계산합니다. 속도를 읽을 수 없는 인터페이스는 사용률을 `N/A`로 표시합니다. Docker 컨테이너가 외부로 통신하는 경우에도 호스트의 물리 NIC를 통과한 트래픽은 호스트 전체 사용량으로 집계됩니다. 단, 컨테이너별 사용량을 따로 구분하지는 않습니다.

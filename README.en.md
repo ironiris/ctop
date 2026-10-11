@@ -91,7 +91,7 @@ Useful options:
 ## Controls
 
 ```text
-q                         quit
+q / Esc                   quit
 h                         show/hide help
 g                         collapse/expand GPU history
 m                         collapse/expand the system section
