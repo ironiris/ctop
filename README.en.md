@@ -128,7 +128,7 @@ Current metrics and graph history are also available as JSON:
 curl http://localhost:8079/api/v1/metrics
 ```
 
-With `--token`, every path is protected. A browser gets a token prompt on first visit and then stays signed in through a seven-day cookie; when it expires, re-enter the token in the prompt inside the dashboard, and because the token is also kept in localStorage a lost cookie is redeemed automatically. From scripts use either form:
+With `--token`, every path except `/login` is protected. A browser gets a token prompt on first visit and then stays signed in through a seven-day cookie. Once that cookie expires or is cleared, re-enter the token in the prompt inside the dashboard. Only tokens entered there are kept in localStorage, so from then on a lost cookie is redeemed automatically; a token typed into the sign-in page itself is not stored. From scripts use either form:
 
 ```bash
 curl -H "Authorization: Bearer TOKEN" http://localhost:8079/api/v1/metrics
