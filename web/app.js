@@ -174,8 +174,23 @@ function render(data) {
   renderProcesses(data.processes || []);
   setText("updated", `Updated ${new Date().toLocaleTimeString()}`);
   setText("version", `v${esc(data.version || "")}`);
-  $("connection").classList.remove("error");
-  $("connection").querySelector("span:last-child").textContent = "Connected";
+  setConnected();
+}
+
+/* A single status indicator lives in the top bar: the LIVE pill carries the
+   state, and a short note sits next to it only while the stream is healthy. */
+function setConnected() {
+  $("live-pill").classList.remove("pending", "error");
+  $("live-label").textContent = "LIVE";
+  const note = $("connection");
+  note.hidden = false;
+  note.textContent = "Connected";
+}
+
+function setStatus(message) {
+  $("live-pill").classList.add("error");
+  $("live-label").textContent = message;
+  $("connection").hidden = true;
 }
 
 async function poll() {
@@ -185,8 +200,7 @@ async function poll() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
   } catch (error) {
-    $("connection").classList.add("error");
-    $("connection").querySelector("span:last-child").textContent = "Connection lost · retrying";
+    setStatus("Connection lost · retrying");
   }
   window.setTimeout(poll, 1000);
 }
@@ -214,8 +228,7 @@ function showSignIn() {
   const overlay = $("sign-in");
   if (!overlay) return;
   overlay.hidden = false;
-  $("connection").classList.add("error");
-  $("connection").querySelector("span:last-child").textContent = "Sign in required";
+  setStatus("Sign in required");
   const field = $("sign-in-token");
   field.value = readStoredToken();
   field.focus();

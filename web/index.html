@@ -15,17 +15,13 @@
     <span class="top-divider"></span>
     <span class="page-name">System monitor</span>
     <span class="spacer"></span>
-    <span class="live-pill"><span class="live-dot"></span>LIVE</span>
+    <span id="live-pill" class="live-pill pending"><span class="live-dot"></span><span id="live-label">Connecting</span></span>
+    <span id="connection" class="status-note" hidden>Connected</span>
     <span id="updated" class="updated">Waiting for metrics…</span>
     <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle color theme" title="Toggle theme">◐</button>
   </header>
 
   <main>
-    <div class="page-heading">
-      <div><p class="eyebrow">HOST TELEMETRY</p><h1>System monitor</h1><p class="subtitle">Live GPU, memory, storage and network activity</p></div>
-      <div id="connection" class="connection"><span class="connection-dot"></span><span>Connecting</span></div>
-    </div>
-
     <section class="section" aria-labelledby="gpu-heading">
       <div class="section-heading"><h2 id="gpu-heading">GPU LIST</h2><span id="gpu-count" class="section-meta">— devices</span></div>
       <div class="table-card gpu-status-card"><div class="table-scroll"><table class="gpu-table"><thead><tr><th>GPU</th><th>NAME</th><th>TEMP</th><th>POWER DRAW/LIMIT</th><th>VRAM USED/TOTAL</th><th class="num">GPU LOAD</th><th class="gpu-meter-column"><div class="gpu-meter-heading"><span>100%</span><span>VRAM ← │ → GPU</span><span>100%</span></div></th></tr></thead><tbody id="gpu-rows"><tr><td colspan="7" class="empty-row">Waiting for GPU metrics…</td></tr></tbody></table></div></div>
