@@ -2748,7 +2748,9 @@ static bool web_request_authorized(const char *request, const char *query) {
 static const char web_login_form_head[] =
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-    "<title>ctop - sign in</title><style>"
+    "<title>ctop - sign in</title>"
+    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">"
+    "<style>"
     "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101319;color:#ecf0f6;"
     "font-family:ui-sans-serif,system-ui,sans-serif}"
     ".card{background:#171b23;border:1px solid #2a303c;border-radius:14px;padding:26px 28px;"
@@ -2822,6 +2824,9 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
     if (query) *query = '\0';
 
     bool api_request = strcmp(path, "/api/v1/metrics") == 0 || strcmp(path, "/api/metrics") == 0;
+    /* The icon carries no telemetry, so serving it unauthenticated lets the sign-in
+       page show it too. */
+    bool favicon_request = strcmp(path, "/favicon.svg") == 0 || strcmp(path, "/favicon.ico") == 0;
 
     if (web_token) {
         if (strcmp(path, "/login") == 0) {
@@ -2838,7 +2843,7 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
             }
             return;
         }
-        if (!web_request_authorized(request, query_string)) {
+        if (!favicon_request && !web_request_authorized(request, query_string)) {
             if (api_request) {
                 static const char body[] = "{\"error\":\"unauthorized\"}\n";
                 web_send_response_extra(fd, 401, "Unauthorized", "application/json; charset=utf-8",
@@ -2875,6 +2880,10 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
     } else if (strcmp(path, "/app.js") == 0) {
         web_send_response(fd, 200, "OK", "text/javascript; charset=utf-8",
                           CTOP_WEB_JS, CTOP_WEB_JS_SIZE);
+    } else if (strcmp(path, "/favicon.svg") == 0 || strcmp(path, "/favicon.ico") == 0) {
+        /* Browsers request /favicon.ico unprompted; the same vector icon answers both. */
+        web_send_response(fd, 200, "OK", "image/svg+xml",
+                          CTOP_WEB_FAVICON, CTOP_WEB_FAVICON_SIZE);
     } else {
         static const char body[] = "Not found\n";
         web_send_response(fd, 404, "Not Found", "text/plain; charset=utf-8",
