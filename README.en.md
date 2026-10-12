@@ -4,6 +4,10 @@ A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network
 
 `ctop` is a single C11 program with no curses dependency. It reads GPU data through NVML, system data from Linux `/proc` interfaces, and link speeds from `/sys`.
 
+![ctop terminal UI](docs/images/ctop.png)
+
+![ctop web dashboard](docs/images/ctop_web.png)
+
 ## Features
 
 - GPU temperature, power, VRAM, and utilization
@@ -28,14 +32,14 @@ A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network
   - the NVML stub library, normally `libnvidia-ml.so` under CUDA's `targets/x86_64-linux/lib/stubs`
 - Standard glibc, `libdl`, and `libm` libraries
 
-The build script defaults to CUDA 12.8 at `/usr/local/cuda-12.8`. A different CUDA installation can be selected with `CUDA_ROOT`.
+The build script looks for the NVML development files under `CUDA_ROOT` (when set), then `/usr/local/cuda*`, `/opt/cuda*`, and `/usr`. If none are found it stops and tells you to set `CUDA_ROOT`. To check dependencies without compiling, run `./build-ctop.sh --check`.
 
 ### Runtime
 
 - A supported NVIDIA GPU
 - NVIDIA driver with NVML available (`nvidia-smi` should work)
-- An interactive Linux terminal
-- A terminal at least 76 columns by 13 rows
+- An interactive Linux terminal at least 76 columns by 13 rows for TUI mode
+- No terminal is needed when running web-only with `--no-tui`
 
 The program also reads `/proc/meminfo`, `/proc/net/dev`, `/proc/stat`, `/proc/uptime`, `/proc/diskstats`, and `/sys/class/net/<interface>/speed`.
 
@@ -54,7 +58,7 @@ Install the NVIDIA driver appropriate for your GPU and verify it:
 nvidia-smi
 ```
 
-Install the CUDA Toolkit from the official NVIDIA CUDA installation guide. The toolkit must provide `nvml.h` and the NVML stub library. If CUDA is installed somewhere other than `/usr/local/cuda-12.8`, pass its path through `CUDA_ROOT`.
+Install the CUDA Toolkit from the official NVIDIA CUDA installation guide. The toolkit must provide `nvml.h` and the NVML stub library. The build script detects installations under `/usr/local/cuda*` and `/opt/cuda*`; for any other location, pass its path through `CUDA_ROOT`.
 
 ## Build
 
@@ -70,7 +74,15 @@ Or with a custom CUDA installation:
 CUDA_ROOT=/usr/local/cuda ./build-ctop.sh
 ```
 
-This creates the `ctop` executable in the project directory.
+This creates the `ctop` executable in the project directory. The web dashboard's HTML, CSS, and JavaScript resources are embedded into the executable during this build.
+
+## Install
+
+Build and install the executable to `/usr/local/bin/ctop`:
+
+```bash
+sudo ./install-ctop.sh
+```
 
 ## Run
 
@@ -82,12 +94,38 @@ Useful options:
 
 ```text
 -i, --interval N          refresh interval in seconds
+-p, --port PORT           serve the web dashboard alongside the TUI
+--no-tui                  run only the web dashboard (requires -p)
+--localhost               restrict web access to 127.0.0.1 (requires -p)
 --no-color                disable ANSI colors
 --debug-log FILE          append diagnostics to a file
 -a, --alternate-screen    restore the previous screen on exit
 -r, --restore-screen      alias for --alternate-screen
 -v, --version             show version
 ```
+
+## Examples
+
+```bash
+./ctop -i 1
+./ctop --no-color
+./ctop --alternate-screen
+./ctop -p 8079
+./ctop -p 8079 --localhost
+./ctop --no-tui --port 8079
+```
+
+## Web dashboard and API
+
+Use `-p 8079` to run the web dashboard alongside the existing terminal UI. Open `http://<server-address>:8079/` in a browser. Add `--no-tui` to run the web dashboard without the terminal UI. The dashboard shows the same sections in the same order as the TUI: `GPU LIST`, `GPU`, `SYSTEM`, `GPU PROCESSES`.
+
+Current metrics and graph history are also available as JSON:
+
+```bash
+curl http://localhost:8079/api/v1/metrics
+```
+
+The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. The API has no authentication.
 
 ## Controls
 

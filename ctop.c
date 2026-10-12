@@ -18,13 +18,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/statvfs.h>
+#include <sys/time.h>
 #include <sys/types.h>
+#include <netinet/in.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
-#define CTOP_VERSION "0.1.0"
+#include "web_assets.h"
+
+#define CTOP_VERSION "0.2.1"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -53,6 +58,8 @@ enum {
 };
 
 static bool color_enabled = true;
+static int active_web_port = 0;
+static double sample_interval_seconds = 1.0;
 static FILE *debug_log_file = NULL;
 static const char *BLOCK_GLYPHS[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
 
@@ -346,6 +353,19 @@ static void format_disk_axis_rate(char *out, size_t size, double value, double m
     if (!isfinite(scaled) || scaled < 0.0) scaled = 0.0;
     unsigned long long integer_part = (unsigned long long)scaled;
     snprintf(out, size, "%llu%s", integer_part, unit);
+}
+
+static void format_network_axis_rate(char *out, size_t size, double value, double maximum) {
+    double divisor;
+    const char *unit;
+    if (maximum >= 1e9) { divisor = 1e9; unit = "Gbps"; }
+    else if (maximum >= 1e6) { divisor = 1e6; unit = "Mbps"; }
+    else if (maximum >= 1e3) { divisor = 1e3; unit = "Kbps"; }
+    else { divisor = 1.0; unit = "bps"; }
+    double scaled = value > 0.0 ? value / divisor : 0.0;
+    if (!isfinite(scaled) || scaled < 0.0) scaled = 0.0;
+    if (scaled > 0.0 && scaled < 10.0) snprintf(out, size, "%.1f%s", scaled, unit);
+    else snprintf(out, size, "%.0f%s", scaled, unit);
 }
 
 static void format_watts(char *out, size_t size, double value, bool valid) {
@@ -1264,9 +1284,15 @@ static double history_peak_400(const History *history) {
     return peak;
 }
 
+typedef enum {
+    GRAPH_AXIS_PERCENT,
+    GRAPH_AXIS_DISK_RATE,
+    GRAPH_AXIS_NETWORK_RATE,
+} GraphAxis;
+
 static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
                                    const History *history, int graph_rows,
-                                   double maximum, bool rate_axis,
+                                   double maximum, GraphAxis axis_type,
                                    const char *footer_label) {
     /* Use one common Y-axis width so all four graph plots have the same
        horizontal geometry. */
@@ -1289,9 +1315,12 @@ static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
                               ? 0.0
                               : (double)(graph_rows - 1 - row) / (double)(graph_rows - 1);
         double level = maximum > 0.0 ? maximum * fraction : 0.0;
-        if (rate_axis) {
+        if (axis_type == GRAPH_AXIS_DISK_RATE || axis_type == GRAPH_AXIS_NETWORK_RATE) {
             char axis_label[32];
-            format_disk_axis_rate(axis_label, sizeof(axis_label), level, maximum);
+            if (axis_type == GRAPH_AXIS_NETWORK_RATE)
+                format_network_axis_rate(axis_label, sizeof(axis_label), level, maximum);
+            else
+                format_disk_axis_rate(axis_label, sizeof(axis_label), level, maximum);
             screen_putf_attr(screen, top + row, left, label_width, ATTR_DIM,
                              "%*s ", label_width - 1, axis_label);
         } else {
@@ -1366,7 +1395,7 @@ static void draw_plot(Screen *screen, int top, int left, int width,
                             width - title_length - 1, ATTR_TEXT_GREEN);
     }
     draw_plot_graph_scaled(screen, top + 1, left, width, history, GRAPH_ROWS,
-                           100.0, false, footer_label);
+                           100.0, GRAPH_AXIS_PERCENT, footer_label);
 }
 
 static void draw_disk_plot(Screen *screen, int top, int left, int width,
@@ -1385,7 +1414,7 @@ static void draw_disk_plot(Screen *screen, int top, int left, int width,
                             width - title_length - 1, ATTR_TEXT_GREEN);
     }
     draw_plot_graph_scaled(screen, top + 1, left, width, history, GRAPH_ROWS,
-                           history_peak_400(history), true, "I/O Spd");
+                           history_peak_400(history), GRAPH_AXIS_DISK_RATE, "I/O Spd");
 }
 
 static void draw_load_bar(Screen *screen, int row, int start, double memory, double gpu) {
@@ -1740,7 +1769,7 @@ static void draw_network_line(Screen *screen, int row, int left, int width,
 static void draw_network_graph(Screen *screen, int top, int left, int width,
                                const History *history, int graph_rows) {
     draw_plot_graph_scaled(screen, top, left, width, history, graph_rows,
-                           100.0, false, "%");
+                           history_peak_400(history), GRAPH_AXIS_NETWORK_RATE, "");
 }
 
 static void draw_system(Screen *screen, int top, const SystemInfo *system,
@@ -1851,12 +1880,21 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
     screen_putf_attr(screen, 0, 0, screen->cols, ATTR_CYAN, "%s  (Press h for help or q to quit)", time_text);
     char cuda_api[32];
     format_cuda_api(cuda_api, sizeof(cuda_api), cuda_driver);
-    if (strcmp(cuda_runtime, "N/A") != 0)
-        screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s",
-                         CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api);
-    else
-        screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s",
-                         CTOP_VERSION, driver, cuda_library, cuda_api);
+    if (strcmp(cuda_runtime, "N/A") != 0) {
+        if (active_web_port)
+            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s  |  Web :%d",
+                             CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api, active_web_port);
+        else
+            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s",
+                             CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api);
+    } else {
+        if (active_web_port)
+            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s  |  Web :%d",
+                             CTOP_VERSION, driver, cuda_library, cuda_api, active_web_port);
+        else
+            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s",
+                             CTOP_VERSION, driver, cuda_library, cuda_api);
+    }
 
     ui->click_target_count = 0;
     char prefix[128];
@@ -1923,23 +1961,27 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
     }
 
     int y = 3;
-    draw_rule(screen, y, "GPU STATUS", false, true, markers, &marker_count);
+    draw_rule(screen, y, "GPU LIST", false, true, markers, &marker_count);
     y++;
     draw_gpu_status(screen, y, gpus, gpu_count);
     y += 1 + gpu_count;
 
-    draw_rule(screen, y, "USAGE HISTORY - PEAK", true, !ui->usage_collapsed, markers, &marker_count);
+    draw_rule(screen, y, "GPU", true, !ui->usage_collapsed, markers, &marker_count);
     y++;
     double vram_average = 0.0, gpu_average = 0.0;
+    int vram_valid_count = 0, gpu_valid_count = 0;
     for (int i = 0; i < gpu_count; i++) {
-        if (gpus[i].memory_valid && gpus[i].memory_total)
+        if (gpus[i].memory_valid && gpus[i].memory_total) {
             vram_average += 100.0 * (double)gpus[i].memory_used / (double)gpus[i].memory_total;
-        if (gpus[i].utilization_valid) gpu_average += gpus[i].utilization;
+            vram_valid_count++;
+        }
+        if (gpus[i].utilization_valid) {
+            gpu_average += gpus[i].utilization;
+            gpu_valid_count++;
+        }
     }
-    if (gpu_count) {
-        vram_average /= gpu_count;
-        gpu_average /= gpu_count;
-    }
+    if (vram_valid_count) vram_average /= vram_valid_count;
+    if (gpu_valid_count) gpu_average /= gpu_valid_count;
     if (ui->usage_collapsed) {
         int half = (screen->cols - 2) / 2;
         screen_putf(screen, y, 0, half, "VRAM AVG(%.1f%%)", vram_average);
@@ -2297,9 +2339,477 @@ static int collect_snapshot(GpuInfo *gpus, int *gpu_count, SystemInfo *system,
     return 0;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Embedded HTTP dashboard                                                   */
+
+static void json_string(FILE *stream, const char *value) {
+    fputc('"', stream);
+    for (const unsigned char *p = (const unsigned char *)(value ? value : ""); *p; p++) {
+        switch (*p) {
+            case '"': fputs("\\\"", stream); break;
+            case '\\': fputs("\\\\", stream); break;
+            case '\b': fputs("\\b", stream); break;
+            case '\f': fputs("\\f", stream); break;
+            case '\n': fputs("\\n", stream); break;
+            case '\r': fputs("\\r", stream); break;
+            case '\t': fputs("\\t", stream); break;
+            default:
+                if (*p < 0x20) fprintf(stream, "\\u%04x", *p);
+                else fputc(*p, stream);
+        }
+    }
+    fputc('"', stream);
+}
+
+static void json_number(FILE *stream, double value, bool valid) {
+    if (!valid || !isfinite(value)) fputs("null", stream);
+    else fprintf(stream, "%.3f", value);
+}
+
+static void json_uint(FILE *stream, unsigned long long value, bool valid) {
+    if (!valid) fputs("null", stream);
+    else fprintf(stream, "%llu", value);
+}
+
+static void json_history(FILE *stream, const History *history, double now) {
+    const size_t max_buckets = 500;
+    typedef struct {
+        Sample first, last, minimum, maximum;
+        size_t first_order, last_order, minimum_order, maximum_order;
+        bool valid;
+    } HistoryBucket;
+    HistoryBucket buckets[500] = {0};
+    size_t in_window = 0;
+    for (size_t i = 0; i < history->count; i++) {
+        Sample sample = history_at(history, i);
+        double age = now - sample.timestamp;
+        if (age >= 0.0 && age <= 400.0) in_window++;
+    }
+    size_t step = in_window > max_buckets ? (in_window + max_buckets - 1) / max_buckets : 1;
+    size_t seen = 0;
+    for (size_t i = 0; i < history->count; i++) {
+        Sample sample = history_at(history, i);
+        double age = now - sample.timestamp;
+        if (age < 0.0 || age > 400.0) continue;
+        size_t bucket_index = seen / step;
+        if (bucket_index >= max_buckets) bucket_index = max_buckets - 1;
+        HistoryBucket *bucket = &buckets[bucket_index];
+        if (!bucket->valid) {
+            bucket->first = bucket->last = bucket->minimum = bucket->maximum = sample;
+            bucket->first_order = bucket->last_order = bucket->minimum_order = bucket->maximum_order = seen;
+            bucket->valid = true;
+        } else {
+            bucket->last = sample;
+            bucket->last_order = seen;
+            if (sample.value < bucket->minimum.value) {
+                bucket->minimum = sample;
+                bucket->minimum_order = seen;
+            }
+            if (sample.value > bucket->maximum.value) {
+                bucket->maximum = sample;
+                bucket->maximum_order = seen;
+            }
+        }
+        seen++;
+    }
+
+    bool comma = false;
+    fputc('[', stream);
+    size_t bucket_count = (in_window + step - 1) / step;
+    for (size_t i = 0; i < bucket_count; i++) {
+        HistoryBucket *bucket = &buckets[i];
+        if (!bucket->valid) continue;
+        Sample samples[4] = {bucket->first, bucket->minimum, bucket->maximum, bucket->last};
+        size_t order[4] = {bucket->first_order, bucket->minimum_order,
+                           bucket->maximum_order, bucket->last_order};
+        for (size_t a = 0; a < 4; a++) {
+            for (size_t b = a + 1; b < 4; b++) {
+                if (order[b] < order[a]) {
+                    size_t order_tmp = order[a]; order[a] = order[b]; order[b] = order_tmp;
+                    Sample sample_tmp = samples[a]; samples[a] = samples[b]; samples[b] = sample_tmp;
+                }
+            }
+        }
+        for (size_t j = 0; j < 4; j++) {
+            if (j && order[j] == order[j - 1]) continue;
+            if (comma) fputc(',', stream);
+            fprintf(stream, "{\"age_seconds\":%.3f,\"value\":%.3f}",
+                    now - samples[j].timestamp, samples[j].value);
+            comma = true;
+        }
+    }
+    fputc(']', stream);
+}
+
+static char *web_metrics_json(const GpuInfo *gpus, int gpu_count,
+                              const SystemInfo *system, const DiskInfo *disk,
+                              const NetworkInfo *network,
+                              const History *ram, const History *swap,
+                              const History *disk_history, const History *network_history,
+                              const History *vram, const History *gpu_history,
+                              size_t *json_size) {
+    char *json = NULL;
+    FILE *stream = open_memstream(&json, json_size);
+    if (!stream) return NULL;
+    double now = monotonic_seconds();
+    double average_vram = 0.0, average_gpu = 0.0;
+    int vram_valid_count = 0, gpu_valid_count = 0;
+    for (int i = 0; i < gpu_count; i++) {
+        if (gpus[i].memory_valid && gpus[i].memory_total) {
+            average_vram += 100.0 * (double)gpus[i].memory_used / (double)gpus[i].memory_total;
+            vram_valid_count++;
+        }
+        if (gpus[i].utilization_valid) {
+            average_gpu += gpus[i].utilization;
+            gpu_valid_count++;
+        }
+    }
+    if (vram_valid_count) average_vram /= vram_valid_count;
+    if (gpu_valid_count) average_gpu /= gpu_valid_count;
+
+    time_t wall_time = time(NULL);
+    struct tm local_time;
+    char timestamp[64] = "";
+    if (localtime_r(&wall_time, &local_time))
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &local_time);
+
+    fputs("{\"version\":", stream);
+    json_string(stream, CTOP_VERSION);
+    fputs(",\"timestamp\":", stream);
+    json_string(stream, timestamp);
+    fprintf(stream, ",\"sample_interval\":%.3f", sample_interval_seconds);
+    fprintf(stream, ",\"ram\":{\"used\":%llu,\"total\":%llu,\"percent\":",
+            system->ram_used, system->ram_total);
+    json_number(stream, system->ram_percent, system->ram_total > 0);
+    fprintf(stream, "},\"swap\":{\"used\":%llu,\"total\":%llu,\"percent\":",
+            system->swap_used, system->swap_total);
+    json_number(stream, system->swap_percent, true);
+    fprintf(stream, "},\"disk\":{\"used\":%llu,\"total\":%llu,\"capacity_valid\":%s,\"valid\":%s,\"read_bps\":",
+            disk->used_bytes, disk->total_bytes,
+            disk->capacity_valid ? "true" : "false", disk->valid ? "true" : "false");
+    json_number(stream, disk->read_bps, disk->valid);
+    fputs(",\"write_bps\":", stream);
+    json_number(stream, disk->write_bps, disk->valid);
+    fputs(",\"total_bps\":", stream);
+    json_number(stream, disk->total_bps, disk->valid);
+    fputs("},\"network\":{\"valid\":", stream);
+    fputs(network->valid ? "true" : "false", stream);
+    fputs(",\"rx_bps\":", stream);
+    json_number(stream, network->rx_bps, network->valid);
+    fputs(",\"tx_bps\":", stream);
+    json_number(stream, network->tx_bps, network->valid);
+    fputs(",\"total_bps\":", stream);
+    json_number(stream, network->total_bps, network->valid);
+    fputs(",\"utilization_valid\":", stream);
+    fputs(network->utilization_valid ? "true" : "false", stream);
+    fputs(",\"utilization_percent\":", stream);
+    json_number(stream, network->utilization_percent, network->utilization_valid);
+    fputs(",\"interfaces\":[", stream);
+    for (int i = 0; i < network->interface_count; i++) {
+        const NetworkInterfaceInfo *interface = &network->interfaces[i];
+        if (i) fputc(',', stream);
+        fputs("{\"name\":", stream);
+        json_string(stream, interface->name);
+        fputs(",\"valid\":", stream);
+        fputs(interface->valid ? "true" : "false", stream);
+        fputs(",\"rx_bps\":", stream);
+        json_number(stream, interface->rx_bps, interface->valid);
+        fputs(",\"tx_bps\":", stream);
+        json_number(stream, interface->tx_bps, interface->valid);
+        fputs(",\"capacity_bps\":", stream);
+        json_number(stream, interface->capacity_bps, interface->capacity_valid);
+        fputs(",\"utilization_percent\":", stream);
+        json_number(stream, interface->utilization_percent, interface->utilization_valid);
+        fputc('}', stream);
+    }
+    fputs("]},\"averages\":{\"vram_percent\":", stream);
+    json_number(stream, average_vram, vram_valid_count > 0);
+    fputs(",\"gpu_percent\":", stream);
+    json_number(stream, average_gpu, gpu_valid_count > 0);
+    fputs("},\"gpus\":[", stream);
+    bool first_gpu = true;
+    for (int i = 0; i < gpu_count; i++) {
+        const GpuInfo *gpu = &gpus[i];
+        if (!first_gpu) fputc(',', stream);
+        first_gpu = false;
+        fprintf(stream, "{\"index\":%d,\"name\":", gpu->index);
+        json_string(stream, gpu->name);
+        fputs(",\"temperature_valid\":", stream);
+        fputs(gpu->temperature_valid ? "true" : "false", stream);
+        fputs(",\"temperature\":", stream);
+        json_number(stream, gpu->temperature, gpu->temperature_valid);
+        fputs(",\"power_valid\":", stream);
+        fputs(gpu->power_valid ? "true" : "false", stream);
+        fputs(",\"power\":", stream);
+        json_number(stream, gpu->power, gpu->power_valid);
+        fputs(",\"power_limit_valid\":", stream);
+        fputs(gpu->power_limit_valid ? "true" : "false", stream);
+        fputs(",\"power_limit\":", stream);
+        json_number(stream, gpu->power_limit, gpu->power_limit_valid);
+        fputs(",\"memory_valid\":", stream);
+        fputs(gpu->memory_valid ? "true" : "false", stream);
+        fputs(",\"memory_used\":", stream);
+        json_uint(stream, gpu->memory_used, gpu->memory_valid);
+        fputs(",\"memory_total\":", stream);
+        json_uint(stream, gpu->memory_total, gpu->memory_valid);
+        fputs(",\"utilization_valid\":", stream);
+        fputs(gpu->utilization_valid ? "true" : "false", stream);
+        fputs(",\"utilization\":", stream);
+        json_number(stream, gpu->utilization, gpu->utilization_valid);
+        fputc('}', stream);
+    }
+    fputs("],\"processes\":[", stream);
+    bool first_process = true;
+    for (int i = 0; i < gpu_count; i++) {
+        const GpuInfo *gpu = &gpus[i];
+        for (size_t j = 0; j < gpu->process_count; j++) {
+            const ProcessInfo *process = &gpu->processes[j];
+            if (!first_process) fputc(',', stream);
+            first_process = false;
+            fprintf(stream, "{\"gpu\":%d,\"pid\":%ld,\"user\":", gpu->index, (long)process->pid);
+            json_string(stream, process->user);
+            fputs(",\"command\":", stream);
+            json_string(stream, process->command);
+            fputs(",\"gpu_memory_valid\":", stream);
+            fputs(process->gpu_memory_valid ? "true" : "false", stream);
+            fputs(",\"gpu_memory\":", stream);
+            json_uint(stream, process->gpu_memory, process->gpu_memory_valid);
+            fputs(",\"sm_valid\":", stream);
+            fputs(process->sm_valid ? "true" : "false", stream);
+            fputs(",\"sm\":", stream);
+            json_number(stream, process->sm, process->sm_valid);
+            fputs(",\"cpu_valid\":", stream);
+            fputs(process->cpu_valid ? "true" : "false", stream);
+            fputs(",\"cpu\":", stream);
+            json_number(stream, process->cpu, process->cpu_valid);
+            fputs(",\"memory_valid\":", stream);
+            fputs(process->memory_valid ? "true" : "false", stream);
+            fputs(",\"memory\":", stream);
+            json_number(stream, process->memory, process->memory_valid);
+            char elapsed[32];
+            format_duration(elapsed, sizeof(elapsed), process->elapsed, process->elapsed_valid);
+            fputs(",\"elapsed\":", stream);
+            json_string(stream, elapsed);
+            fputc('}', stream);
+        }
+    }
+    fputs("],\"history\":{\"ram\":", stream);
+    json_history(stream, ram, now);
+    fputs(",\"swap\":", stream);
+    json_history(stream, swap, now);
+    fputs(",\"disk\":", stream);
+    json_history(stream, disk_history, now);
+    fputs(",\"network\":", stream);
+    json_history(stream, network_history, now);
+    fputs(",\"vram\":", stream);
+    json_history(stream, vram, now);
+    fputs(",\"gpu\":", stream);
+    json_history(stream, gpu_history, now);
+    fputs("}}", stream);
+    fclose(stream);
+    return json;
+}
+
+static bool web_send_all(int fd, const void *data, size_t size) {
+    const char *cursor = data;
+    while (size) {
+        ssize_t sent = send(fd, cursor, size, MSG_NOSIGNAL);
+        if (sent > 0) {
+            cursor += sent;
+            size -= (size_t)sent;
+        } else if (sent < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void web_send_response(int fd, int status, const char *reason,
+                              const char *content_type, const void *body, size_t body_size) {
+    char header[512];
+    int length = snprintf(header, sizeof(header),
+                          "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
+                          "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+                          "Connection: close\r\n\r\n",
+                          status, reason, content_type, body_size);
+    if (length <= 0 || (size_t)length >= sizeof(header)) return;
+    if (!web_send_all(fd, header, (size_t)length)) return;
+    if (body_size) web_send_all(fd, body, body_size);
+}
+
+static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
+                             const SystemInfo *system, const DiskInfo *disk,
+                             const NetworkInfo *network, const History *ram,
+                             const History *swap, const History *disk_history,
+                             const History *network_history, const History *vram,
+                             const History *gpu_history) {
+    struct timeval timeout = {.tv_sec = 0, .tv_usec = 250000};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    char request[4096];
+    size_t used = 0;
+    while (used + 1 < sizeof(request)) {
+        ssize_t received = recv(fd, request + used, sizeof(request) - used - 1, 0);
+        if (received > 0) {
+            used += (size_t)received;
+            request[used] = '\0';
+            if (strchr(request, '\n')) break;
+        } else if (received < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return;
+        }
+    }
+    request[used] = '\0';
+    char method[8], path[1024];
+    if (sscanf(request, "%7s %1023s", method, path) != 2) return;
+    if (strcmp(method, "GET") != 0) {
+        static const char body[] = "Method not allowed\n";
+        web_send_response(fd, 405, "Method Not Allowed", "text/plain; charset=utf-8",
+                          body, sizeof(body) - 1);
+        return;
+    }
+    char *query = strchr(path, '?');
+    if (query) *query = '\0';
+
+    if (strcmp(path, "/api/v1/metrics") == 0 || strcmp(path, "/api/metrics") == 0) {
+        size_t json_size = 0;
+        char *json = web_metrics_json(gpus, gpu_count, system, disk, network,
+                                      ram, swap, disk_history, network_history,
+                                      vram, gpu_history, &json_size);
+        if (json) {
+            web_send_response(fd, 200, "OK", "application/json; charset=utf-8", json, json_size);
+            free(json);
+        } else {
+            static const char body[] = "Unable to serialize metrics\n";
+            web_send_response(fd, 500, "Internal Server Error", "text/plain; charset=utf-8",
+                              body, sizeof(body) - 1);
+        }
+        return;
+    }
+    if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
+        web_send_response(fd, 200, "OK", "text/html; charset=utf-8",
+                          CTOP_WEB_INDEX, CTOP_WEB_INDEX_SIZE);
+    } else if (strcmp(path, "/style.css") == 0) {
+        web_send_response(fd, 200, "OK", "text/css; charset=utf-8",
+                          CTOP_WEB_CSS, CTOP_WEB_CSS_SIZE);
+    } else if (strcmp(path, "/app.js") == 0) {
+        web_send_response(fd, 200, "OK", "text/javascript; charset=utf-8",
+                          CTOP_WEB_JS, CTOP_WEB_JS_SIZE);
+    } else {
+        static const char body[] = "Not found\n";
+        web_send_response(fd, 404, "Not Found", "text/plain; charset=utf-8",
+                          body, sizeof(body) - 1);
+    }
+}
+
+static int web_server_open(int port, bool local_only) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    struct sockaddr_in address = {0};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(local_only ? INADDR_LOOPBACK : INADDR_ANY);
+    address.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(fd, 16) != 0) {
+        int error = errno;
+        close(fd);
+        errno = error;
+        return -1;
+    }
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    return fd;
+}
+
+static void web_serve_pending(int listener, const GpuInfo *gpus, int gpu_count,
+                              const SystemInfo *system, const DiskInfo *disk,
+                              const NetworkInfo *network, const History *ram,
+                              const History *swap, const History *disk_history,
+                              const History *network_history, const History *vram,
+                              const History *gpu_history) {
+    for (int served = 0; served < 8; served++) {
+        int client = accept(listener, NULL, NULL);
+        if (client < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+                debug_log("web accept failed: %s", strerror(errno));
+            return;
+        }
+        web_serve_client(client, gpus, gpu_count, system, disk, network,
+                         ram, swap, disk_history, network_history, vram, gpu_history);
+        close(client);
+    }
+}
+
+static int web_only_run(int listener, double interval, GpuInfo *gpus, int *gpu_count,
+                        SystemInfo *system, DiskInfo *disk, NetworkInfo *network,
+                        unsigned long long *total_ticks, History *ram, History *swap,
+                        History *disk_history, History *network_history,
+                        History *vram, History *gpu_history, int port,
+                        bool local_only) {
+    signal(SIGINT, signal_stop);
+    signal(SIGTERM, signal_stop);
+    if (local_only)
+        printf("ctop web monitor: http://127.0.0.1:%d/ (Ctrl-C to stop)\n", port);
+    else
+        printf("ctop web monitor listening on 0.0.0.0:%d (Ctrl-C to stop)\n", port);
+    fflush(stdout);
+    double next_sample = 0.0;
+    while (!stop_requested) {
+        double now = monotonic_seconds();
+        if (now >= next_sample) {
+            int result = collect_snapshot(gpus, gpu_count, system, disk, network, total_ticks);
+            if (result == 0) {
+                double average_vram = 0.0, average_gpu = 0.0;
+                int vram_valid_count = 0, gpu_valid_count = 0;
+                for (int i = 0; i < *gpu_count; i++) {
+                    if (gpus[i].memory_valid && gpus[i].memory_total) {
+                        average_vram += 100.0 * (double)gpus[i].memory_used / (double)gpus[i].memory_total;
+                        vram_valid_count++;
+                    }
+                    if (gpus[i].utilization_valid) {
+                        average_gpu += gpus[i].utilization;
+                        gpu_valid_count++;
+                    }
+                }
+                if (vram_valid_count) average_vram /= vram_valid_count;
+                if (gpu_valid_count) average_gpu /= gpu_valid_count;
+                double timestamp = monotonic_seconds();
+                if (vram_valid_count) history_add(vram, timestamp, average_vram);
+                if (gpu_valid_count) history_add(gpu_history, timestamp, average_gpu);
+                history_add(ram, timestamp, system->ram_percent);
+                history_add(swap, timestamp, system->swap_percent);
+                if (disk->valid) history_add(disk_history, timestamp, disk->total_bps);
+                if (network->valid)
+                    history_add(network_history, timestamp, network->total_bps);
+            } else {
+                debug_log("web snapshot failed result=%d", result);
+            }
+            next_sample = monotonic_seconds() + interval;
+        }
+        double wait = next_sample - monotonic_seconds();
+        if (wait < 0.0) wait = 0.0;
+        if (wait > 1.0) wait = 1.0;
+        struct pollfd descriptor = {.fd = listener, .events = POLLIN};
+        int polled = poll(&descriptor, 1, (int)(wait * 1000.0));
+        if (polled > 0 && (descriptor.revents & POLLIN))
+            web_serve_pending(listener, gpus, *gpu_count, system, disk, network,
+                              ram, swap, disk_history, network_history, vram, gpu_history);
+        else if (polled < 0 && errno != EINTR)
+            debug_log("web poll failed: %s", strerror(errno));
+    }
+    return 0;
+}
+
 static void usage(const char *program) {
-    printf("Usage: %s [-i seconds] [--no-color] [--debug-log FILE] [-a|--alternate-screen] [-r|--restore-screen] [-v|--version]\n", program);
+    printf("Usage: %s [-i seconds] [-p|--port PORT] [--no-tui] [--no-color] [--debug-log FILE] [-a|--alternate-screen] [-r|--restore-screen] [-v|--version]\n", program);
     printf("  -i, --interval N       sample interval, default 1 second\n");
+    printf("  -p, --port PORT        serve the web monitor alongside the TUI\n");
+    printf("  --no-tui               run web monitor only (requires --port)\n");
+    printf("  --localhost            restrict web access to 127.0.0.1 (requires --port)\n");
     printf("  --no-color             disable ANSI colors\n");
     printf("  --debug-log FILE       append snapshot/render diagnostics to FILE\n");
     printf("  -a, --alternate-screen     restore the previous screen on exit\n");
@@ -2309,6 +2819,9 @@ static void usage(const char *program) {
 
 int main(int argc, char **argv) {
     double interval = 1.0;
+    int web_port = 0;
+    bool no_tui = false;
+    bool local_only = false;
     const char *debug_log_path = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
@@ -2319,6 +2832,20 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--debug-log") == 0) {
             if (++i >= argc || !argv[i][0]) { usage(argv[0]); return 2; }
             debug_log_path = argv[i];
+        } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--port") == 0) {
+            if (++i >= argc) { usage(argv[0]); return 2; }
+            char *end = NULL;
+            errno = 0;
+            long parsed_port = strtol(argv[i], &end, 10);
+            if (errno || !end || *end || parsed_port < 1 || parsed_port > 65535) {
+                fprintf(stderr, "port must be an integer from 1 to 65535\n");
+                return 2;
+            }
+            web_port = (int)parsed_port;
+        } else if (strcmp(argv[i], "--no-tui") == 0 || strcmp(argv[i], "--web-only") == 0) {
+            no_tui = true;
+        } else if (strcmp(argv[i], "--localhost") == 0 || strcmp(argv[i], "--local-only") == 0) {
+            local_only = true;
         } else if (strcmp(argv[i], "--alternate-screen") == 0 ||
                    strcmp(argv[i], "--restore-screen") == 0 ||
                    strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "-r") == 0) {
@@ -2332,6 +2859,15 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    if (no_tui && !web_port) {
+        fprintf(stderr, "--no-tui requires -p/--port\n");
+        return 2;
+    }
+    if (local_only && !web_port) {
+        fprintf(stderr, "--localhost requires -p/--port\n");
+        return 2;
+    }
+    sample_interval_seconds = interval;
     if (debug_log_path) {
         debug_log_file = fopen(debug_log_path, "a");
         if (!debug_log_file) {
@@ -2346,7 +2882,7 @@ int main(int argc, char **argv) {
         }
         debug_log("started pid=%ld version=%s interval=%.3f", (long)getpid(), CTOP_VERSION, interval);
     }
-    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
+    if (!no_tui && (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO))) {
         debug_log("startup failed: stdin/stdout is not a TTY");
         fprintf(stderr, "ctop requires an interactive terminal\n");
         return 2;
@@ -2381,9 +2917,52 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    int web_listener = -1;
+    if (web_port) {
+        web_listener = web_server_open(web_port, local_only);
+        if (web_listener < 0) {
+            fprintf(stderr, "cannot listen on port %d: %s\n", web_port, strerror(errno));
+            history_free(&vram); history_free(&gpu_util); history_free(&ram);
+            history_free(&swap); history_free(&disk_history); history_free(&network_history);
+            nvmlShutdown();
+            return 1;
+        }
+        active_web_port = web_port;
+        debug_log("web monitor listening on port %d local_only=%d", web_port, local_only);
+    }
+
+    if (no_tui) {
+        GpuInfo *web_gpus = calloc(MAX_GPUS, sizeof(*web_gpus));
+        if (!web_gpus) {
+            fprintf(stderr, "GPU state allocation failed\n");
+            close(web_listener);
+            history_free(&vram); history_free(&gpu_util); history_free(&ram);
+            history_free(&swap); history_free(&disk_history); history_free(&network_history);
+            nvmlShutdown();
+            return 1;
+        }
+        int web_gpu_count = 0;
+        SystemInfo web_system = {0};
+        DiskInfo web_disk = {0};
+        NetworkInfo web_network = {0};
+        unsigned long long web_total_ticks = 0;
+        int web_result = web_only_run(web_listener, interval, web_gpus, &web_gpu_count,
+                                      &web_system, &web_disk, &web_network,
+                                      &web_total_ticks, &ram, &swap, &disk_history,
+                                      &network_history, &vram, &gpu_util, web_port,
+                                      local_only);
+        free(web_gpus);
+        close(web_listener);
+        history_free(&vram); history_free(&gpu_util); history_free(&ram);
+        history_free(&swap); history_free(&disk_history); history_free(&network_history);
+        nvmlShutdown();
+        return web_result;
+    }
+
     if (!enter_terminal()) {
         debug_log("startup failed: could not enter raw terminal mode (%s)", strerror(errno));
         fprintf(stderr, "could not enter raw terminal mode\n");
+        if (web_listener >= 0) close(web_listener);
         history_free(&vram); history_free(&gpu_util); history_free(&ram);
         history_free(&swap); history_free(&disk_history); history_free(&network_history);
         nvmlShutdown();
@@ -2397,6 +2976,7 @@ int main(int argc, char **argv) {
     if (!screen_init(&screen, rows, cols)) {
         debug_log("startup failed: screen allocation rows=%d cols=%d", rows, cols);
         restore_terminal();
+        if (web_listener >= 0) close(web_listener);
         history_free(&vram); history_free(&gpu_util); history_free(&ram);
         history_free(&swap); history_free(&disk_history); history_free(&network_history);
         nvmlShutdown();
@@ -2407,6 +2987,7 @@ int main(int argc, char **argv) {
         debug_log("startup failed: GPU state allocation");
         screen_free(&screen);
         restore_terminal();
+        if (web_listener >= 0) close(web_listener);
         history_free(&vram); history_free(&gpu_util); history_free(&ram);
         history_free(&swap); history_free(&disk_history); history_free(&network_history);
         nvmlShutdown();
@@ -2457,24 +3038,28 @@ int main(int argc, char **argv) {
                 error[0] = '\0';
                 ui.network_interface_count = network.interface_count;
                 double average_vram = 0.0, average_gpu = 0.0;
+                int vram_valid_count = 0, gpu_valid_count = 0;
                 for (int i = 0; i < gpu_count; i++) {
-                    if (gpus[i].memory_valid && gpus[i].memory_total)
+                    if (gpus[i].memory_valid && gpus[i].memory_total) {
                         average_vram += 100.0 * (double)gpus[i].memory_used / (double)gpus[i].memory_total;
-                    if (gpus[i].utilization_valid) average_gpu += gpus[i].utilization;
+                        vram_valid_count++;
+                    }
+                    if (gpus[i].utilization_valid) {
+                        average_gpu += gpus[i].utilization;
+                        gpu_valid_count++;
+                    }
                 }
-                if (gpu_count) {
-                    average_vram /= gpu_count;
-                    average_gpu /= gpu_count;
-                }
+                if (vram_valid_count) average_vram /= vram_valid_count;
+                if (gpu_valid_count) average_gpu /= gpu_valid_count;
                 double timestamp = monotonic_seconds();
-                history_add(&vram, timestamp, average_vram);
-                history_add(&gpu_util, timestamp, average_gpu);
+                if (vram_valid_count) history_add(&vram, timestamp, average_vram);
+                if (gpu_valid_count) history_add(&gpu_util, timestamp, average_gpu);
                 history_add(&ram, timestamp, system.ram_percent);
                 history_add(&swap, timestamp, system.swap_percent);
                 if (disk.valid)
                     history_add(&disk_history, timestamp, disk.total_bps);
-                if (network.utilization_valid)
-                    history_add(&network_history, timestamp, network.utilization_percent);
+                if (network.valid)
+                    history_add(&network_history, timestamp, network.total_bps);
             }
             next_sample = now + interval;
             needs_render = true;
@@ -2521,18 +3106,27 @@ int main(int argc, char **argv) {
         double wait_seconds = deadline - monotonic_seconds();
         if (wait_seconds < 0.02) wait_seconds = 0.02;
         if (wait_seconds > 1.0) wait_seconds = 1.0;
-        struct pollfd descriptor = {.fd = STDIN_FILENO, .events = POLLIN};
-        int poll_result = poll(&descriptor, 1, (int)(wait_seconds * 1000.0));
+        struct pollfd descriptors[2] = {
+            {.fd = STDIN_FILENO, .events = POLLIN},
+            {.fd = web_listener, .events = POLLIN},
+        };
+        nfds_t descriptor_count = web_listener >= 0 ? 2 : 1;
+        int poll_result = poll(descriptors, descriptor_count, (int)(wait_seconds * 1000.0));
         if (poll_result < 0 && errno != EINTR)
             debug_log("poll failed: %s", strerror(errno));
+        if (poll_result > 0 && descriptor_count == 2 &&
+            (descriptors[1].revents & POLLIN))
+            web_serve_pending(web_listener, gpus, gpu_count, &system, &disk, &network,
+                              &ram, &swap, &disk_history, &network_history,
+                              &vram, &gpu_util);
         if (poll_result > 0) {
-            debug_log("poll event revents=0x%x", descriptor.revents);
-            if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            debug_log("poll event revents=0x%x", descriptors[0].revents);
+            if (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
                 debug_log("terminal input closed or invalid");
                 quit = true;
             }
         }
-        if (poll_result > 0 && (descriptor.revents & POLLIN)) {
+        if (poll_result > 0 && (descriptors[0].revents & POLLIN)) {
             ssize_t read_count = read(STDIN_FILENO, input.data + input.length,
                                       sizeof(input.data) - input.length);
             if (read_count > 0) {
@@ -2558,6 +3152,7 @@ int main(int argc, char **argv) {
     debug_log("main loop ended stop_requested=%d quit=%d", stop_requested, quit);
     free(gpus);
     screen_free(&screen);
+    if (web_listener >= 0) close(web_listener);
     history_free(&vram);
     history_free(&gpu_util);
     history_free(&ram);

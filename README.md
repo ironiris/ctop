@@ -6,7 +6,9 @@ C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 �
 
 [English README](README.en.md)
 
-![ctop 실행 화면](docs/images/ctop.png)
+![ctop 터미널 화면](docs/images/ctop.png)
+
+![ctop 웹 대시보드](docs/images/ctop_web.png)
 
 ## 주요 기능
 
@@ -33,21 +35,21 @@ C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 �
   - 일반적으로 CUDA의 `targets/x86_64-linux/lib/stubs` 아래에 있는 NVML stub 라이브러리
 - 기본 glibc, `libdl`, `libm`
 
-빌드 스크립트의 기본 CUDA 경로는 다음과 같습니다.
+빌드 스크립트는 `CUDA_ROOT`(지정한 경우), `/usr/local/cuda*`, `/opt/cuda*`, `/usr` 순으로 NVML 개발 파일을 찾습니다. 찾지 못으면 빌드를 중단하고 `CUDA_ROOT` 지정 방법을 알려줍니다.
 
-```text
-/usr/local/cuda-12.8
+의존성만 확인하려면:
+
+```bash
+./build-ctop.sh --check
 ```
-
-CUDA 설치 경로가 다르면 `CUDA_ROOT` 환경 변수로 지정할 수 있습니다.
 
 ### 실행 시
 
 - 지원되는 NVIDIA GPU
 - NVML을 제공하는 NVIDIA 드라이버
 - `nvidia-smi`가 정상적으로 실행되는 환경
-- Linux의 실제 터미널(TTY)
-- 최소 터미널 크기 76열 x 13행
+- TUI 실행 시 Linux의 실제 터미널(TTY)과 최소 터미널 크기 76열 x 13행 필요
+- 웹 전용(`--no-tui`) 실행에는 TTY 불필요
 
 다음 `/proc` 및 `/sys` 파일을 사용합니다.
 
@@ -97,7 +99,15 @@ CUDA가 다른 경로에 설치되어 있다면:
 CUDA_ROOT=/usr/local/cuda ./build-ctop.sh
 ```
 
-정상적으로 완료되면 프로젝트 디렉터리에 `ctop` 실행 파일이 생성됩니다.
+정상적으로 완료되면 프로젝트 디렉터리에 `ctop` 실행 파일이 생성됩니다. 웹 대시보드의 HTML/CSS/JS 리소스도 이때 실행 파일에 포함됩니다.
+
+## 설치
+
+컴파일한 실행 파일을 `/usr/local/bin/ctop`에 설치합니다.
+
+```bash
+sudo ./install-ctop.sh
+```
 
 ## 실행
 
@@ -109,6 +119,9 @@ CUDA_ROOT=/usr/local/cuda ./build-ctop.sh
 
 ```text
 -i, --interval N          갱신 주기(초)
+-p, --port PORT           웹 대시보드를 지정한 포트로 함께 실행
+--no-tui                  TUI 없이 웹 대시보드만 실행(-p 필요)
+--localhost               웹 접속을 127.0.0.1로 제한(-p 필요)
 --no-color                ANSI 색상 끄기
 --debug-log FILE          디버그 로그 파일
 -a, --alternate-screen    종료 시 기존 화면 복원
@@ -122,7 +135,22 @@ CUDA_ROOT=/usr/local/cuda ./build-ctop.sh
 ./ctop -i 1
 ./ctop --no-color
 ./ctop --alternate-screen
+./ctop -p 8079
+./ctop -p 8079 --localhost
+./ctop --no-tui --port 8079
 ```
+
+## 웹 대시보드와 API
+
+`-p 8079`를 지정하면 기존 터미널 화면과 웹 대시보드를 함께 실행합니다. 브라우저에서 `http://<서버 주소>:8079/`를 여세요. TUI 없이 웹 대시보드만 실행하려면 `--no-tui`를 추가합니다. 웹 대시보드는 TUI와 같은 순서로 `GPU LIST`, `GPU`, `SYSTEM`, `GPU PROCESSES` 섹션을 표시합니다.
+
+현재 상태와 그래프 히스토리는 JSON API로도 조회할 수 있습니다.
+
+```bash
+curl http://localhost:8079/api/v1/metrics
+```
+
+응답에는 GPU, 프로세스, RAM/SWAP, 디스크, 네트워크의 현재값과 그래프 히스토리가 JSON으로 포함됩니다(`application/json`). `/api/metrics`도 같은 응답을 반환합니다. 히스토리 샘플에는 현재 시점으로부터의 경과 시간(`age_seconds`)과 측정값(`value`)이 포함되며, NET 히스토리의 측정값은 bit/s 처리량이고 샘플 간격은 `sample_interval`(초)로 제공됩니다. 400초 구간의 샘플이 500개를 넘으면 구간별로 축약하되 각 구간의 최솟값과 최댓값은 그대로 남깁니다. GPU 평균은 측정값을 정상적으로 반환한 장치 기준으로 계산합니다. 웹 서버는 기본적으로 모든 네트워크 인터페이스(`0.0.0.0`)에서 연결을 받습니다. 로컬에서만 접속하려면 `--localhost`를 지정하세요. API 인증은 없습니다.
 
 ## 키 조작
 

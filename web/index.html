@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>ctop · System Monitor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="ctop home"><span class="brand-mark">C</span><span>ctop</span></a>
+    <span class="top-divider"></span>
+    <span class="page-name">System monitor</span>
+    <span class="spacer"></span>
+    <span class="live-pill"><span class="live-dot"></span>LIVE</span>
+    <span id="updated" class="updated">Waiting for metrics…</span>
+    <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle color theme" title="Toggle theme">◐</button>
+  </header>
+
+  <main>
+    <div class="page-heading">
+      <div><p class="eyebrow">HOST TELEMETRY</p><h1>System monitor</h1><p class="subtitle">Live GPU, memory, storage and network activity</p></div>
+      <div id="connection" class="connection"><span class="connection-dot"></span><span>Connecting</span></div>
+    </div>
+
+    <section class="section" aria-labelledby="gpu-heading">
+      <div class="section-heading"><h2 id="gpu-heading">GPU LIST</h2><span id="gpu-count" class="section-meta">— devices</span></div>
+      <div class="table-card gpu-status-card"><div class="table-scroll"><table class="gpu-table"><thead><tr><th>GPU</th><th>NAME</th><th>TEMP</th><th>POWER DRAW/LIMIT</th><th>VRAM USED/TOTAL</th><th class="num">GPU LOAD</th><th class="gpu-meter-column"><div class="gpu-meter-heading"><span>100%</span><span>VRAM ← │ → GPU</span><span>100%</span></div></th></tr></thead><tbody id="gpu-rows"><tr><td colspan="7" class="empty-row">Waiting for GPU metrics…</td></tr></tbody></table></div></div>
+    </section>
+
+    <section class="section" aria-labelledby="history-heading">
+      <div class="section-heading"><h2 id="history-heading">GPU</h2><span class="section-meta">Average across GPUs</span></div>
+      <div class="history-grid">
+        <article class="metric-card history-card"><div class="metric-head"><span class="metric-label">Average VRAM usage</span></div>
+          <div id="vram-value" class="metric-value">—</div>
+          <div class="chart-wrap"><div id="vram-axis" class="y-axis"></div><svg id="vram-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="VRAM history"></svg></div>
+          <div class="x-axis" id="vram-time-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
+        </article>
+        <article class="metric-card history-card"><div class="metric-head"><span class="metric-label">Average GPU utilization</span></div>
+          <div id="gpu-load-value" class="metric-value">—</div>
+          <div class="chart-wrap"><div id="gpu-axis" class="y-axis"></div><svg id="gpu-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="GPU utilization history"></svg></div>
+          <div class="x-axis" id="gpu-time-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="system-heading">
+      <div class="section-heading"><h2 id="system-heading">SYSTEM</h2><span class="section-meta">400-second history</span></div>
+      <div class="metric-grid">
+        <article class="metric-card" data-metric="ram">
+          <div class="metric-head"><span class="metric-label"><i class="metric-icon ram-icon"></i>RAM</span><span id="ram-detail" class="metric-info">—</span></div>
+          <div id="ram-value" class="metric-value">—</div>
+          <div class="chart-wrap"><div id="ram-axis" class="y-axis"></div><svg id="ram-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="RAM usage history"></svg></div>
+          <div class="x-axis" id="ram-time-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
+        </article>
+        <article class="metric-card" data-metric="swap">
+          <div class="metric-head"><span class="metric-label"><i class="metric-icon swap-icon"></i>SWAP</span><span id="swap-detail" class="metric-info">—</span></div>
+          <div id="swap-value" class="metric-value">—</div>
+          <div class="chart-wrap"><div id="swap-axis" class="y-axis"></div><svg id="swap-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="Swap usage history"></svg></div>
+          <div class="x-axis" id="swap-time-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
+        </article>
+        <article class="metric-card" data-metric="disk">
+          <div class="metric-head"><span class="metric-label"><i class="metric-icon disk-icon"></i>DISK</span><span id="disk-detail" class="metric-info">—</span></div>
+          <div id="disk-value" class="metric-value">—</div>
+          <div class="chart-wrap"><div id="disk-axis" class="y-axis"></div><svg id="disk-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="Disk I/O history"></svg></div>
+          <div class="x-axis" id="disk-time-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
+        </article>
+        <article class="metric-card" data-metric="net">
+          <div class="metric-head"><span class="metric-label"><i class="metric-icon net-icon"></i>NET</span><span id="net-detail" class="metric-info">—</span></div>
+          <div id="net-value" class="metric-value">—</div>
+          <div class="chart-wrap"><div id="net-axis" class="y-axis"></div><svg id="net-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="Network throughput history"></svg></div>
+          <div class="x-axis" id="net-time-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="process-heading">
+      <div class="section-heading"><h2 id="process-heading">GPU PROCESSES</h2><span id="process-count" class="section-meta">— processes</span></div>
+      <div class="table-card"><div class="table-scroll"><table><thead><tr><th>GPU</th><th>PID</th><th>USER</th><th class="num">GPU-MEM</th><th class="num">GPU-LOAD</th><th class="num">CPU-AVG</th><th class="num">MEM</th><th>TIME</th><th>COMMAND</th></tr></thead><tbody id="process-rows"><tr><td colspan="9" class="empty-row">Waiting for process metrics…</td></tr></tbody></table></div></div>
+    </section>
+    <footer>ctop <span id="version"></span><span class="footer-sep">·</span>System metrics refresh automatically</footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
