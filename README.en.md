@@ -113,7 +113,7 @@ The disk information in the SYSTEM section uses this format:
 DISK(XX%) XXX.XGB/YYY.YGB R:<read rate> W:<write rate>
 ```
 
-`XXX.XGB` is the current used capacity and `YYY.YGB` is the total capacity. `R:` and `W:` show read and write throughput; `/s` is omitted to save space (for example, `W:271K` means 271K per second). The I/O graph shows combined read and write throughput for block devices, excluding partitions and `loop*`, `ram*`, and `zram*` devices. Its Y-axis is scaled to the maximum peak measured during the most recent 400 seconds rather than a 0–100% range. Capacity is measured for the root filesystem (`/`).
+`XXX.XGB` is the current used capacity and `YYY.YGB` is the total capacity. `R:` and `W:` display read and write throughput, respectively (for example, `W:271K`). The I/O graph shows combined read and write throughput for block devices, excluding partitions and `loop*`, `ram*`, and `zram*` devices. Its Y-axis is scaled to the maximum peak measured during the most recent 400 seconds rather than a 0–100% range. Capacity is measured for the root filesystem (`/`).
 
 ## Notes
 
