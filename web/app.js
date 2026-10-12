@@ -181,6 +181,7 @@ function render(data) {
 async function poll() {
   try {
     const response = await fetch("/api/v1/metrics", {cache: "no-store"});
+    if (response.status === 401) { await handleUnauthorized(); return; }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
   } catch (error) {
@@ -189,6 +190,44 @@ async function poll() {
   }
   window.setTimeout(poll, 1000);
 }
+
+/* The server hands out an HttpOnly cookie at /login.  The token is also kept in
+   localStorage so an expired cookie can be redeemed again without typing it. */
+let tokenRedeemed = false;
+async function handleUnauthorized() {
+  const stored = readStoredToken();
+  if (stored && !tokenRedeemed) {
+    tokenRedeemed = true;
+    try {
+      const attempt = await fetch(`/login?token=${encodeURIComponent(stored)}`, {cache: "no-store", redirect: "follow"});
+      if (attempt.ok || attempt.status === 302) { window.location.replace("/"); return; }
+    } catch (_) {}
+  }
+  showSignIn();
+}
+
+function readStoredToken() {
+  try { return localStorage.getItem("ctop-token") || ""; } catch (_) { return ""; }
+}
+
+function showSignIn() {
+  const overlay = $("sign-in");
+  if (!overlay) return;
+  overlay.hidden = false;
+  $("connection").classList.add("error");
+  $("connection").querySelector("span:last-child").textContent = "Sign in required";
+  const field = $("sign-in-token");
+  field.value = readStoredToken();
+  field.focus();
+}
+
+$("sign-in-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const token = $("sign-in-token").value.trim();
+  if (!token) return;
+  try { localStorage.setItem("ctop-token", token); } catch (_) {}
+  window.location.href = `/login?token=${encodeURIComponent(token)}`;
+});
 
 let savedTheme = null;
 try { savedTheme = localStorage.getItem("ctop-theme"); } catch (_) {}

@@ -97,6 +97,8 @@ Useful options:
 -p, --port PORT           serve the web dashboard alongside the TUI
 --no-tui                  run only the web dashboard (requires -p)
 --localhost               restrict web access to 127.0.0.1 (requires -p)
+--token TOKEN             require an access token for the dashboard and API
+                          (requires -p; CTOP_TOKEN is also accepted)
 --no-color                disable ANSI colors
 --debug-log FILE          append diagnostics to a file
 -a, --alternate-screen    restore the previous screen on exit
@@ -112,6 +114,7 @@ Useful options:
 ./ctop --alternate-screen
 ./ctop -p 8079
 ./ctop -p 8079 --localhost
+./ctop -p 8079 --token "$(openssl rand -hex 16)" --localhost
 ./ctop --no-tui --port 8079
 ```
 
@@ -125,7 +128,14 @@ Current metrics and graph history are also available as JSON:
 curl http://localhost:8079/api/v1/metrics
 ```
 
-The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. The API has no authentication.
+With `--token`, every path is protected. A browser gets a token prompt on first visit and then stays signed in through a seven-day cookie; when it expires, re-enter the token in the prompt inside the dashboard, and because the token is also kept in localStorage a lost cookie is redeemed automatically. From scripts use either form:
+
+```bash
+curl -H "Authorization: Bearer TOKEN" http://localhost:8079/api/v1/metrics
+curl "http://localhost:8079/api/v1/metrics?token=TOKEN"
+```
+
+The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. Without `--token`, the dashboard and API are open without authentication.
 
 ## Controls
 

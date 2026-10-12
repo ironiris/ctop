@@ -81,6 +81,16 @@
     </section>
     <footer>ctop <span id="version"></span><span class="footer-sep">·</span>System metrics refresh automatically</footer>
   </main>
+  <div id="sign-in" class="sign-in" hidden>
+    <form id="sign-in-form" class="sign-in-card" method="get" action="/login">
+      <h2>ctop</h2>
+      <p>Access token required</p>
+      <label for="sign-in-token">TOKEN</label>
+      <input id="sign-in-token" name="token" type="password" autocomplete="current-password">
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>

@@ -122,6 +122,7 @@ sudo ./install-ctop.sh
 -p, --port PORT           웹 대시보드를 지정한 포트로 함께 실행
 --no-tui                  TUI 없이 웹 대시보드만 실행(-p 필요)
 --localhost               웹 접속을 127.0.0.1로 제한(-p 필요)
+--token TOKEN             웹 대시보드와 API에 접근 토큰 요구(-p 필요, CTOP_TOKEN 환경변수도 가능)
 --no-color                ANSI 색상 끄기
 --debug-log FILE          디버그 로그 파일
 -a, --alternate-screen    종료 시 기존 화면 복원
@@ -137,6 +138,7 @@ sudo ./install-ctop.sh
 ./ctop --alternate-screen
 ./ctop -p 8079
 ./ctop -p 8079 --localhost
+./ctop -p 8079 --token "$(openssl rand -hex 16)" --localhost
 ./ctop --no-tui --port 8079
 ```
 
@@ -150,7 +152,14 @@ sudo ./install-ctop.sh
 curl http://localhost:8079/api/v1/metrics
 ```
 
-응답에는 GPU, 프로세스, RAM/SWAP, 디스크, 네트워크의 현재값과 그래프 히스토리가 JSON으로 포함됩니다(`application/json`). `/api/metrics`도 같은 응답을 반환합니다. 히스토리 샘플에는 현재 시점으로부터의 경과 시간(`age_seconds`)과 측정값(`value`)이 포함되며, NET 히스토리의 측정값은 bit/s 처리량이고 샘플 간격은 `sample_interval`(초)로 제공됩니다. 400초 구간의 샘플이 500개를 넘으면 구간별로 축약하되 각 구간의 최솟값과 최댓값은 그대로 남깁니다. GPU 평균은 측정값을 정상적으로 반환한 장치 기준으로 계산합니다. 웹 서버는 기본적으로 모든 네트워크 인터페이스(`0.0.0.0`)에서 연결을 받습니다. 로컬에서만 접속하려면 `--localhost`를 지정하세요. API 인증은 없습니다.
+`--token`을 지정하면 모든 경로가 보호됩니다. 브라우저에서는 첫 접속 시 토큰 입력 화면이 뜨고, 인증 후 7일짜리 쿠키로 유지됩니다. 만료되면 대시보드 안의 입력창에 다시 넣으면 되고, 한 번 입력한 토큰은 로컬스토리지에 저장되어 쿠키가 사라져도 자동으로 재인증됩니다. 스크립트에서는 아래 두 방법 중 하나를 씁니다.
+
+```bash
+curl -H "Authorization: Bearer 토큰" http://localhost:8079/api/v1/metrics
+curl "http://localhost:8079/api/v1/metrics?token=토큰"
+```
+
+응답에는 GPU, 프로세스, RAM/SWAP, 디스크, 네트워크의 현재값과 그래프 히스토리가 JSON으로 포함됩니다(`application/json`). `/api/metrics`도 같은 응답을 반환합니다. 히스토리 샘플에는 현재 시점으로부터의 경과 시간(`age_seconds`)과 측정값(`value`)이 포함되며, NET 히스토리의 측정값은 bit/s 처리량이고 샘플 간격은 `sample_interval`(초)로 제공됩니다. 400초 구간의 샘플이 500개를 넘으면 구간별로 축약하되 각 구간의 최솟값과 최댓값은 그대로 남깁니다. GPU 평균은 측정값을 정상적으로 반환한 장치 기준으로 계산합니다. 웹 서버는 기본적으로 모든 네트워크 인터페이스(`0.0.0.0`)에서 연결을 받습니다. 로컬에서만 접속하려면 `--localhost`를 지정하세요. `--token`을 지정하지 않으면 웹 페이지와 API가 인증 없이 열립니다.
 
 ## 키 조작
 

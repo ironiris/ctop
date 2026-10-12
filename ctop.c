@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/statvfs.h>
@@ -29,7 +30,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.2.1"
+#define CTOP_VERSION "0.2.2"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -59,6 +60,7 @@ enum {
 
 static bool color_enabled = true;
 static int active_web_port = 0;
+static const char *web_token = NULL;
 static double sample_interval_seconds = 1.0;
 static FILE *debug_log_file = NULL;
 static const char *BLOCK_GLYPHS[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
@@ -2627,16 +2629,158 @@ static bool web_send_all(int fd, const void *data, size_t size) {
 }
 
 static void web_send_response(int fd, int status, const char *reason,
-                              const char *content_type, const void *body, size_t body_size) {
-    char header[512];
+                              const char *content_type, const void *body, size_t body_size);
+
+/* Optional extra_headers are inserted as complete lines before the blank line
+   that ends the response header block. */
+static void web_send_response_extra(int fd, int status, const char *reason,
+                                    const char *content_type, const void *body, size_t body_size,
+                                    const char *extra_headers) {
+    char header[1024];
     int length = snprintf(header, sizeof(header),
                           "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
                           "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+                          "%s"
                           "Connection: close\r\n\r\n",
-                          status, reason, content_type, body_size);
+                          status, reason, content_type, body_size,
+                          extra_headers ? extra_headers : "");
     if (length <= 0 || (size_t)length >= sizeof(header)) return;
     if (!web_send_all(fd, header, (size_t)length)) return;
     if (body_size) web_send_all(fd, body, body_size);
+}
+
+/* The access token may be supplied as a bearer header, a `token=` query
+   parameter, or the cookie handed out by /login.  Comparison is constant time
+   so the endpoint cannot be used to probe the token one byte at a time. */
+static bool web_token_equal(const char *candidate) {
+    if (!web_token || !candidate) return false;
+    size_t expected = strlen(web_token), given = strlen(candidate);
+    if (expected != given) return false;
+    unsigned char difference = 0;
+    for (size_t i = 0; i < expected; i++)
+        difference |= (unsigned char)(web_token[i] ^ candidate[i]);
+    return difference == 0;
+}
+
+static bool web_query_param(const char *query, const char *name, char *out, size_t out_size) {
+    if (!query || !out_size) return false;
+    size_t name_length = strlen(name);
+    const char *at = query;
+    while ((at = strstr(at, name)) != NULL) {
+        bool boundary = (at == query) || at[-1] == '?' || at[-1] == '&';
+        if (boundary && at[name_length] == '=') {
+            const char *value = at + name_length + 1;
+            size_t length = 0;
+            while (value[length] && value[length] != '&' && value[length] != ' ' &&
+                   value[length] != '\r' && value[length] != '\n' && length + 1 < out_size) {
+                out[length] = value[length];
+                length++;
+            }
+            out[length] = '\0';
+            return length > 0;
+        }
+        at += name_length;
+    }
+    return false;
+}
+
+static bool web_header_value(const char *request, const char *name, char *out, size_t out_size) {
+    size_t name_length = strlen(name);
+    const char *line = request;
+    while (line && *line) {
+        const char *next = strchr(line, '\n');
+        size_t line_length = next ? (size_t)(next - line) : strlen(line);
+        if (line_length > name_length + 1 && strncasecmp(line, name, name_length) == 0 &&
+            line[name_length] == ':') {
+            const char *value = line + name_length + 1;
+            const char *end = line + line_length;
+            while (value < end && (*value == ' ' || *value == '\t')) value++;
+            size_t length = 0;
+            while (value < end && *value != '\r' && length + 1 < out_size) {
+                out[length++] = *value++;
+            }
+            out[length] = '\0';
+            return length > 0;
+        }
+        if (!next) break;
+        line = next + 1;
+    }
+    return false;
+}
+
+static bool web_cookie_token(const char *request, char *out, size_t out_size) {
+    char cookie[1024];
+    if (!web_header_value(request, "Cookie", cookie, sizeof(cookie))) return false;
+    const char *marker = strstr(cookie, "ctop_token=");
+    if (!marker) return false;
+    marker += strlen("ctop_token=");
+    size_t length = 0;
+    while (marker[length] && marker[length] != ';' && marker[length] != ' ' && length + 1 < out_size) {
+        out[length] = marker[length];
+        length++;
+    }
+    out[length] = '\0';
+    return length > 0;
+}
+
+static bool web_bearer_token(const char *request, char *out, size_t out_size) {
+    char header[512];
+    if (!web_header_value(request, "Authorization", header, sizeof(header))) return false;
+    const char *scheme = "Bearer ";
+    size_t scheme_length = strlen(scheme);
+    if (strncasecmp(header, scheme, scheme_length) != 0) return false;
+    size_t length = 0;
+    const char *value = header + scheme_length;
+    while (*value == ' ') value++;
+    while (*value && length + 1 < out_size) out[length++] = *value++;
+    out[length] = '\0';
+    return length > 0;
+}
+
+static bool web_request_authorized(const char *request, const char *query) {
+    char candidate[256];
+    if (web_bearer_token(request, candidate, sizeof(candidate)) && web_token_equal(candidate)) return true;
+    if (web_query_param(query, "token", candidate, sizeof(candidate)) && web_token_equal(candidate)) return true;
+    if (web_cookie_token(request, candidate, sizeof(candidate)) && web_token_equal(candidate)) return true;
+    return false;
+}
+
+static const char web_login_form_head[] =
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>ctop - sign in</title><style>"
+    "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101319;color:#ecf0f6;"
+    "font-family:ui-sans-serif,system-ui,sans-serif}"
+    ".card{background:#171b23;border:1px solid #2a303c;border-radius:14px;padding:26px 28px;"
+    "width:min(360px,calc(100vw - 40px));box-shadow:0 12px 32px #0002}"
+    "h1{margin:0 0 6px;font-size:19px}.sub{margin:0 0 18px;color:#8b95a5;font-size:13px}"
+    "label{display:block;font:11px ui-monospace,monospace;color:#8b95a5;margin-bottom:6px}"
+    "input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:9px;border:1px solid #2a303c;"
+    "background:#101319;color:#ecf0f6;font:14px ui-monospace,monospace}"
+    "button{margin-top:14px;width:100%;padding:10px;border:0;border-radius:9px;background:#70e0b1;"
+    "color:#0b1913;font-weight:700;cursor:pointer}"
+    ".error{margin:12px 0 0;color:#ff747c;font-size:12px}</style></head>"
+    "<body><form class=\"card\" method=\"get\" action=\"/login\">"
+    "<h1>ctop</h1><p class=\"sub\">Access token required</p>"
+    "<label for=\"token\">TOKEN</label>"
+    "<input id=\"token\" name=\"token\" type=\"password\" autocomplete=\"current-password\" autofocus>";
+
+static const char web_login_form_tail[] = "<button type=\"submit\">Sign in</button></form></body></html>";
+
+static void web_send_login_page(int fd, bool invalid) {
+    char page[2048];
+    int length = snprintf(page, sizeof(page), "%s%s%s",
+                          web_login_form_head,
+                          invalid ? "<p class=\"error\">Invalid token</p>" : "",
+                          web_login_form_tail);
+    if (length <= 0 || (size_t)length >= sizeof(page)) return;
+    web_send_response(fd, invalid ? 401 : 200, invalid ? "Unauthorized" : "OK",
+                      "text/html; charset=utf-8", page, (size_t)length);
+}
+
+static void web_send_response(int fd, int status, const char *reason,
+                              const char *content_type, const void *body, size_t body_size) {
+    web_send_response_extra(fd, status, reason, content_type, body, body_size, NULL);
 }
 
 static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
@@ -2655,11 +2799,13 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
         if (received > 0) {
             used += (size_t)received;
             request[used] = '\0';
-            if (strchr(request, '\n')) break;
+            /* Authorization lives in the header block, so read past the request
+               line until the terminating blank line arrives. */
+            if (strstr(request, "\r\n\r\n") || strstr(request, "\n\n")) break;
         } else if (received < 0 && errno == EINTR) {
             continue;
         } else {
-            return;
+            break;
         }
     }
     request[used] = '\0';
@@ -2672,9 +2818,40 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
         return;
     }
     char *query = strchr(path, '?');
+    const char *query_string = query ? query + 1 : NULL;
     if (query) *query = '\0';
 
-    if (strcmp(path, "/api/v1/metrics") == 0 || strcmp(path, "/api/metrics") == 0) {
+    bool api_request = strcmp(path, "/api/v1/metrics") == 0 || strcmp(path, "/api/metrics") == 0;
+
+    if (web_token) {
+        if (strcmp(path, "/login") == 0) {
+            char candidate[256];
+            if (web_query_param(query_string, "token", candidate, sizeof(candidate)) &&
+                web_token_equal(candidate)) {
+                char extra[384];
+                snprintf(extra, sizeof(extra),
+                         "Location: /\r\nSet-Cookie: ctop_token=%s; Path=/; HttpOnly; SameSite=Lax;"
+                         " Max-Age=604800\r\n", web_token);
+                web_send_response_extra(fd, 302, "Found", "text/plain; charset=utf-8", "", 0, extra);
+            } else {
+                web_send_login_page(fd, query_string != NULL);
+            }
+            return;
+        }
+        if (!web_request_authorized(request, query_string)) {
+            if (api_request) {
+                static const char body[] = "{\"error\":\"unauthorized\"}\n";
+                web_send_response_extra(fd, 401, "Unauthorized", "application/json; charset=utf-8",
+                                        body, sizeof(body) - 1,
+                                        "WWW-Authenticate: Bearer realm=\"ctop\"\r\n");
+            } else {
+                web_send_login_page(fd, false);
+            }
+            return;
+        }
+    }
+
+    if (api_request) {
         size_t json_size = 0;
         char *json = web_metrics_json(gpus, gpu_count, system, disk, network,
                                       ram, swap, disk_history, network_history,
@@ -2753,9 +2930,11 @@ static int web_only_run(int listener, double interval, GpuInfo *gpus, int *gpu_c
     signal(SIGINT, signal_stop);
     signal(SIGTERM, signal_stop);
     if (local_only)
-        printf("ctop web monitor: http://127.0.0.1:%d/ (Ctrl-C to stop)\n", port);
+        printf("ctop web monitor: http://127.0.0.1:%d/%s (Ctrl-C to stop)\n", port,
+               web_token ? " [token protected]" : "");
     else
-        printf("ctop web monitor listening on 0.0.0.0:%d (Ctrl-C to stop)\n", port);
+        printf("ctop web monitor listening on 0.0.0.0:%d%s (Ctrl-C to stop)\n", port,
+               web_token ? " [token protected]" : "");
     fflush(stdout);
     double next_sample = 0.0;
     while (!stop_requested) {
@@ -2804,12 +2983,27 @@ static int web_only_run(int listener, double interval, GpuInfo *gpus, int *gpu_c
     return 0;
 }
 
+static bool valid_web_token(const char *token) {
+    if (!token) return false;
+    size_t length = strlen(token);
+    if (length < 8 || length > 128) return false;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)token[i];
+        bool allowed = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                       (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-' || ch == '~';
+        if (!allowed) return false;
+    }
+    return true;
+}
+
 static void usage(const char *program) {
-    printf("Usage: %s [-i seconds] [-p|--port PORT] [--no-tui] [--no-color] [--debug-log FILE] [-a|--alternate-screen] [-r|--restore-screen] [-v|--version]\n", program);
+    printf("Usage: %s [-i seconds] [-p|--port PORT] [--no-tui] [--localhost] [--token TOKEN] [--no-color] [--debug-log FILE] [-a|--alternate-screen] [-r|--restore-screen] [-v|--version]\n", program);
     printf("  -i, --interval N       sample interval, default 1 second\n");
     printf("  -p, --port PORT        serve the web monitor alongside the TUI\n");
     printf("  --no-tui               run web monitor only (requires --port)\n");
     printf("  --localhost            restrict web access to 127.0.0.1 (requires --port)\n");
+    printf("  --token TOKEN          require an access token for the web monitor and API\n");
+    printf("                         (requires --port; CTOP_TOKEN is also accepted)\n");
     printf("  --no-color             disable ANSI colors\n");
     printf("  --debug-log FILE       append snapshot/render diagnostics to FILE\n");
     printf("  -a, --alternate-screen     restore the previous screen on exit\n");
@@ -2822,6 +3016,7 @@ int main(int argc, char **argv) {
     int web_port = 0;
     bool no_tui = false;
     bool local_only = false;
+    const char *token_argument = NULL;
     const char *debug_log_path = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
@@ -2846,6 +3041,9 @@ int main(int argc, char **argv) {
             no_tui = true;
         } else if (strcmp(argv[i], "--localhost") == 0 || strcmp(argv[i], "--local-only") == 0) {
             local_only = true;
+        } else if (strcmp(argv[i], "--token") == 0) {
+            if (++i >= argc || !argv[i][0]) { usage(argv[0]); return 2; }
+            token_argument = argv[i];
         } else if (strcmp(argv[i], "--alternate-screen") == 0 ||
                    strcmp(argv[i], "--restore-screen") == 0 ||
                    strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "-r") == 0) {
@@ -2866,6 +3064,19 @@ int main(int argc, char **argv) {
     if (local_only && !web_port) {
         fprintf(stderr, "--localhost requires -p/--port\n");
         return 2;
+    }
+    const char *environment_token = getenv("CTOP_TOKEN");
+    web_token = token_argument ? token_argument
+            : (environment_token && environment_token[0] ? environment_token : NULL);
+    if (web_token) {
+        if (!web_port) {
+            fprintf(stderr, "--token requires -p/--port\n");
+            return 2;
+        }
+        if (!valid_web_token(web_token)) {
+            fprintf(stderr, "access token must be 8-128 characters of A-Z a-z 0-9 . _ - ~\n");
+            return 2;
+        }
     }
     sample_interval_seconds = interval;
     if (debug_log_path) {
