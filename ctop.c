@@ -30,7 +30,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.2.2"
+#define CTOP_VERSION "0.2.3"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -359,15 +359,15 @@ static void format_disk_axis_rate(char *out, size_t size, double value, double m
 
 static void format_network_axis_rate(char *out, size_t size, double value, double maximum) {
     double divisor;
-    const char *unit;
-    if (maximum >= 1e9) { divisor = 1e9; unit = "Gbps"; }
-    else if (maximum >= 1e6) { divisor = 1e6; unit = "Mbps"; }
-    else if (maximum >= 1e3) { divisor = 1e3; unit = "Kbps"; }
-    else { divisor = 1.0; unit = "bps"; }
+    const char *prefix;
+    if (maximum >= 1e9) { divisor = 1e9; prefix = "G"; }
+    else if (maximum >= 1e6) { divisor = 1e6; prefix = "M"; }
+    else if (maximum >= 1e3) { divisor = 1e3; prefix = "K"; }
+    else { divisor = 1.0; prefix = ""; }
     double scaled = value > 0.0 ? value / divisor : 0.0;
     if (!isfinite(scaled) || scaled < 0.0) scaled = 0.0;
-    if (scaled > 0.0 && scaled < 10.0) snprintf(out, size, "%.1f%s", scaled, unit);
-    else snprintf(out, size, "%.0f%s", scaled, unit);
+    if (scaled > 0.0 && scaled < 10.0) snprintf(out, size, "%.1f%s", scaled, prefix);
+    else snprintf(out, size, "%.0f%s", scaled, prefix);
 }
 
 static void format_watts(char *out, size_t size, double value, bool valid) {
@@ -1771,7 +1771,7 @@ static void draw_network_line(Screen *screen, int row, int left, int width,
 static void draw_network_graph(Screen *screen, int top, int left, int width,
                                const History *history, int graph_rows) {
     draw_plot_graph_scaled(screen, top, left, width, history, graph_rows,
-                           history_peak_400(history), GRAPH_AXIS_NETWORK_RATE, "");
+                           history_peak_400(history), GRAPH_AXIS_NETWORK_RATE, "bps");
 }
 
 static void draw_system(Screen *screen, int top, const SystemInfo *system,
