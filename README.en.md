@@ -120,7 +120,7 @@ Useful options:
 
 ## Web dashboard and API
 
-Use `-p 8079` to run the web dashboard alongside the existing terminal UI. Open `http://<server-address>:8079/` in a browser. Add `--no-tui` to run the web dashboard without the terminal UI. The dashboard shows the same sections in the same order as the TUI: `GPU LIST`, `GPU`, `SYSTEM`, `GPU PROCESSES`.
+Use `-p 8079` to run the web dashboard alongside the existing terminal UI. Open `http://<server-address>:8079/` in a browser. When running with the TUI, the detected web monitor address (for example, `http://192.168.0.177:8079`) appears in the TUI's upper-right corner. With `--localhost`, it displays `http://127.0.0.1:8079`. Add `--no-tui` to run the web dashboard without the terminal UI. The dashboard shows the same sections in the same order as the TUI: `GPU LIST`, `GPU`, `SYSTEM`, `GPU PROCESSES`.
 
 Current metrics and graph history are also available as JSON:
 

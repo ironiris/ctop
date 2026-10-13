@@ -2,8 +2,10 @@
 
 #include <nvml.h>
 
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <dlfcn.h>
+#include <ifaddrs.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -23,6 +25,7 @@
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <termios.h>
 #include <time.h>
@@ -30,7 +33,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.2.3"
+#define CTOP_VERSION "0.2.4"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -60,6 +63,7 @@ enum {
 
 static bool color_enabled = true;
 static int active_web_port = 0;
+static char active_web_url[64] = "";
 static const char *web_token = NULL;
 static double sample_interval_seconds = 1.0;
 static FILE *debug_log_file = NULL;
@@ -1871,6 +1875,52 @@ static void draw_clickable_text(Screen *screen, UiState *ui, int row, int *colum
     *column += length;
 }
 
+static bool usable_web_ipv4(struct in_addr address) {
+    uint32_t host = ntohl(address.s_addr);
+    return host != INADDR_ANY && (host >> 24) != 127 && (host & 0xffff0000U) != 0xa9fe0000U;
+}
+
+static void format_active_web_url(char *out, size_t size, int port, bool local_only) {
+    char host[INET_ADDRSTRLEN] = "127.0.0.1";
+    if (!local_only) {
+        bool found = false;
+        /* A UDP connect selects the outbound interface without sending a packet. */
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd >= 0) {
+            struct sockaddr_in destination = {0};
+            destination.sin_family = AF_INET;
+            destination.sin_port = htons(53);
+            inet_pton(AF_INET, "8.8.8.8", &destination.sin_addr);
+            if (connect(fd, (struct sockaddr *)&destination, sizeof(destination)) == 0) {
+                struct sockaddr_in local = {0};
+                socklen_t local_size = sizeof(local);
+                if (getsockname(fd, (struct sockaddr *)&local, &local_size) == 0 &&
+                    usable_web_ipv4(local.sin_addr) &&
+                    inet_ntop(AF_INET, &local.sin_addr, host, sizeof(host)))
+                    found = true;
+            }
+            close(fd);
+        }
+        if (!found) {
+            struct ifaddrs *interfaces = NULL;
+            if (getifaddrs(&interfaces) == 0) {
+                for (struct ifaddrs *interface = interfaces; interface; interface = interface->ifa_next) {
+                    if (!interface->ifa_addr || interface->ifa_addr->sa_family != AF_INET ||
+                        !(interface->ifa_flags & IFF_UP) || (interface->ifa_flags & IFF_LOOPBACK))
+                        continue;
+                    struct in_addr address = ((struct sockaddr_in *)interface->ifa_addr)->sin_addr;
+                    if (usable_web_ipv4(address) && inet_ntop(AF_INET, &address, host, sizeof(host))) {
+                        found = true;
+                        break;
+                    }
+                }
+                freeifaddrs(interfaces);
+            }
+        }
+    }
+    snprintf(out, size, "http://%s:%d", host, port);
+}
+
 static void draw_header(Screen *screen, const char *driver, const char *cuda_library,
                         const char *cuda_runtime, int cuda_driver, double interval,
                         bool paused, UiState *ui) {
@@ -1879,24 +1929,28 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
     localtime_r(&now, &local_time);
     char time_text[64];
     strftime(time_text, sizeof(time_text), "%a %b %d %H:%M:%S %Y", &local_time);
-    screen_putf_attr(screen, 0, 0, screen->cols, ATTR_CYAN, "%s  (Press h for help or q to quit)", time_text);
+    if (active_web_port && active_web_url[0]) {
+        screen_put_attr(screen, 0, 0, time_text, (int)strlen(time_text), ATTR_CYAN);
+        char web_address[128];
+        snprintf(web_address, sizeof(web_address), "Web monitor: %s", active_web_url);
+        int address_length = (int)strlen(web_address);
+        if (address_length < screen->cols)
+            screen_put_attr(screen, 0, screen->cols - address_length, web_address,
+                            address_length, ATTR_NORMAL);
+    } else {
+        screen_putf_attr(screen, 0, 0, screen->cols, ATTR_CYAN,
+                         "%s  (Press h for help or q to quit)", time_text);
+    }
     char cuda_api[32];
     format_cuda_api(cuda_api, sizeof(cuda_api), cuda_driver);
-    if (strcmp(cuda_runtime, "N/A") != 0) {
-        if (active_web_port)
-            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s  |  Web :%d",
-                             CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api, active_web_port);
-        else
-            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s",
-                             CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api);
-    } else {
-        if (active_web_port)
-            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s  |  Web :%d",
-                             CTOP_VERSION, driver, cuda_library, cuda_api, active_web_port);
-        else
-            screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD, "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s",
-                             CTOP_VERSION, driver, cuda_library, cuda_api);
-    }
+    if (strcmp(cuda_runtime, "N/A") != 0)
+        screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD,
+                         "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s",
+                         CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api);
+    else
+        screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD,
+                         "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s",
+                         CTOP_VERSION, driver, cuda_library, cuda_api);
 
     ui->click_target_count = 0;
     char prefix[128];
@@ -3148,7 +3202,9 @@ int main(int argc, char **argv) {
             return 1;
         }
         active_web_port = web_port;
-        debug_log("web monitor listening on port %d local_only=%d", web_port, local_only);
+        format_active_web_url(active_web_url, sizeof(active_web_url), web_port, local_only);
+        debug_log("web monitor listening on port %d local_only=%d url=%s",
+                  web_port, local_only, active_web_url);
     }
 
     if (no_tui) {
