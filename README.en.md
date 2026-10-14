@@ -97,7 +97,7 @@ Useful options:
 -p, --port PORT           serve the web dashboard alongside the TUI
 --no-tui                  run only the web dashboard (requires -p)
 --localhost               restrict web access to 127.0.0.1 (requires -p)
---token TOKEN             require an access token for the dashboard and API
+-t, --token TOKEN         require an access token for the dashboard and API
                           (requires -p; CTOP_TOKEN is also accepted)
 --no-color                disable ANSI colors
 --debug-log FILE          append diagnostics to a file
@@ -120,7 +120,9 @@ Useful options:
 
 ## Web dashboard and API
 
-Use `-p 8079` to run the web dashboard alongside the existing terminal UI. Open `http://<server-address>:8079/` in a browser. When running with the TUI, the detected web monitor address (for example, `http://192.168.0.177:8079`) appears in the TUI's upper-right corner. With `--localhost`, it displays `http://127.0.0.1:8079`. Add `--no-tui` to run the web dashboard without the terminal UI. The dashboard shows the same sections in the same order as the TUI: `GPU LIST`, `GPU`, `SYSTEM`, `GPU PROCESSES`.
+Use `-p 8079` to run the web dashboard alongside the existing terminal UI. Open `http://<server-address>:8079/` in a browser. When running with the TUI, the detected web monitor address (for example, `http://192.168.0.177:8079`) appears in the TUI's upper-right corner. With `--localhost`, it displays `http://127.0.0.1:8079`. Add `--no-tui` to run the web dashboard without the terminal UI.
+
+Add another ctop server address under `ADDITIONAL MONITORS` at the bottom of the dashboard to combine its GPUs and processes and show separate GPU and SYSTEM sections per monitor. Enter only a host and port (for example, `192.168.0.177:8079`) or a protocol-relative address (`//192.168.0.177:8079`). The dashboard's current protocol (`http` or `https`) is used, and `/api/v1/metrics` is appended automatically. With one monitor, prefixes and the prefix field are hidden. With multiple monitors, the current server defaults to prefix `A` (editable next to GPU LIST); new monitors get the next unused prefix (`B`, `C`, and so on), producing IDs such as `A0` and `B0`. Drag the `GPU LIST`, `GPU`, `SYSTEM`, and `GPU PROCESSES` titles to reorder them; the order is saved in the browser. Addresses, prefixes, and tokens entered in the adjacent `Token` field are saved in browser localStorage. Remote addresses must be reachable from the browser, and remote servers must allow cross-origin browser requests. Use the `Token` field for token-protected remote APIs; the `?token=...` URL form is also supported.
 
 Current metrics and graph history are also available as JSON:
 
@@ -135,7 +137,7 @@ curl -H "Authorization: Bearer TOKEN" http://localhost:8079/api/v1/metrics
 curl "http://localhost:8079/api/v1/metrics?token=TOKEN"
 ```
 
-The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. Without `--token`, the dashboard and API are open without authentication.
+The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. Without `--token`, the dashboard and API are open without authentication. The metrics API allows cross-origin browser requests for multi-monitoring, so use `--token` on instances exposed to a network.
 
 ## Controls
 

@@ -33,7 +33,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.2.4"
+#define CTOP_VERSION "0.3.0"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -2867,12 +2867,6 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
     request[used] = '\0';
     char method[8], path[1024];
     if (sscanf(request, "%7s %1023s", method, path) != 2) return;
-    if (strcmp(method, "GET") != 0) {
-        static const char body[] = "Method not allowed\n";
-        web_send_response(fd, 405, "Method Not Allowed", "text/plain; charset=utf-8",
-                          body, sizeof(body) - 1);
-        return;
-    }
     char *query = strchr(path, '?');
     const char *query_string = query ? query + 1 : NULL;
     if (query) *query = '\0';
@@ -2881,6 +2875,21 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
     /* The icon carries no telemetry, so serving it unauthenticated lets the sign-in
        page show it too. */
     bool favicon_request = strcmp(path, "/favicon.svg") == 0 || strcmp(path, "/favicon.ico") == 0;
+
+    if (strcmp(method, "OPTIONS") == 0 && api_request) {
+        web_send_response_extra(fd, 204, "No Content", "application/json", "", 0,
+                                "Access-Control-Allow-Origin: *\r\n"
+                                "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+                                "Access-Control-Allow-Headers: Authorization\r\n"
+                                "Access-Control-Max-Age: 600\r\n");
+        return;
+    }
+    if (strcmp(method, "GET") != 0) {
+        static const char body[] = "Method not allowed\n";
+        web_send_response(fd, 405, "Method Not Allowed", "text/plain; charset=utf-8",
+                          body, sizeof(body) - 1);
+        return;
+    }
 
     if (web_token) {
         if (strcmp(path, "/login") == 0) {
@@ -2902,7 +2911,8 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
                 static const char body[] = "{\"error\":\"unauthorized\"}\n";
                 web_send_response_extra(fd, 401, "Unauthorized", "application/json; charset=utf-8",
                                         body, sizeof(body) - 1,
-                                        "WWW-Authenticate: Bearer realm=\"ctop\"\r\n");
+                                        "WWW-Authenticate: Bearer realm=\"ctop\"\r\n"
+                                        "Access-Control-Allow-Origin: *\r\n");
             } else {
                 web_send_login_page(fd, false);
             }
@@ -2916,12 +2926,14 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
                                       ram, swap, disk_history, network_history,
                                       vram, gpu_history, &json_size);
         if (json) {
-            web_send_response(fd, 200, "OK", "application/json; charset=utf-8", json, json_size);
+            web_send_response_extra(fd, 200, "OK", "application/json; charset=utf-8",
+                                    json, json_size, "Access-Control-Allow-Origin: *\r\n");
             free(json);
         } else {
             static const char body[] = "Unable to serialize metrics\n";
-            web_send_response(fd, 500, "Internal Server Error", "text/plain; charset=utf-8",
-                              body, sizeof(body) - 1);
+            web_send_response_extra(fd, 500, "Internal Server Error", "text/plain; charset=utf-8",
+                                    body, sizeof(body) - 1,
+                                    "Access-Control-Allow-Origin: *\r\n");
         }
         return;
     }
@@ -3060,12 +3072,12 @@ static bool valid_web_token(const char *token) {
 }
 
 static void usage(const char *program) {
-    printf("Usage: %s [-i seconds] [-p|--port PORT] [--no-tui] [--localhost] [--token TOKEN] [--no-color] [--debug-log FILE] [-a|--alternate-screen] [-r|--restore-screen] [-v|--version]\n", program);
+    printf("Usage: %s [-i seconds] [-p|--port PORT] [--no-tui] [--localhost] [-t|--token TOKEN] [--no-color] [--debug-log FILE] [-a|--alternate-screen] [-r|--restore-screen] [-v|--version]\n", program);
     printf("  -i, --interval N       sample interval, default 1 second\n");
     printf("  -p, --port PORT        serve the web monitor alongside the TUI\n");
     printf("  --no-tui               run web monitor only (requires --port)\n");
     printf("  --localhost            restrict web access to 127.0.0.1 (requires --port)\n");
-    printf("  --token TOKEN          require an access token for the web monitor and API\n");
+    printf("  -t, --token TOKEN      require an access token for the web monitor and API\n");
     printf("                         (requires --port; CTOP_TOKEN is also accepted)\n");
     printf("  --no-color             disable ANSI colors\n");
     printf("  --debug-log FILE       append snapshot/render diagnostics to FILE\n");
@@ -3104,7 +3116,7 @@ int main(int argc, char **argv) {
             no_tui = true;
         } else if (strcmp(argv[i], "--localhost") == 0 || strcmp(argv[i], "--local-only") == 0) {
             local_only = true;
-        } else if (strcmp(argv[i], "--token") == 0) {
+        } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--token") == 0) {
             if (++i >= argc || !argv[i][0]) { usage(argv[0]); return 2; }
             token_argument = argv[i];
         } else if (strcmp(argv[i], "--alternate-screen") == 0 ||
