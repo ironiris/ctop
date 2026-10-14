@@ -9,17 +9,31 @@ const percent = (value) => validNumber(value) ? `${number(value, 1)}%` : "—";
 const MONITORS_KEY = "ctop-monitors-v1";
 const LOCAL_PREFIX_KEY = "ctop-local-prefix-v1";
 const DASHBOARD_ORDER_KEY = "ctop-dashboard-section-order-v1";
-const DASHBOARD_SECTION_KEYS = ["gpu-list", "gpu", "system", "gpu-processes"];
-let draggedDashboardSection = null;
-let dashboardDropTarget = null;
 function loadDashboardSectionOrder() {
   let stored;
   try { stored = JSON.parse(localStorage.getItem(DASHBOARD_ORDER_KEY) || "[]"); } catch (_) {}
-  const valid = Array.isArray(stored) ? stored.filter((key, index) =>
-    DASHBOARD_SECTION_KEYS.includes(key) && stored.indexOf(key) === index) : [];
-  return [...valid, ...DASHBOARD_SECTION_KEYS.filter((key) => !valid.includes(key))];
+  if (!Array.isArray(stored)) return [];
+  return stored.filter((key, index) => typeof key === "string" &&
+    (key === "gpu-list" || /^(gpu|system|gpu-processes):[a-zA-Z0-9_-]{1,64}$/.test(key)) &&
+    stored.indexOf(key) === index);
 }
 let dashboardSectionOrder = loadDashboardSectionOrder();
+function currentDashboardSectionKeys() {
+  return ["gpu-list", ...sources.map((source) => `gpu:${source.id}`),
+    ...sources.map((source) => `system:${source.id}`),
+    ...sources.map((source) => `gpu-processes:${source.id}`)];
+}
+function reconcileDashboardSectionOrder() {
+  const defaults = currentDashboardSectionKeys();
+  dashboardSectionOrder = dashboardSectionOrder.filter((key) => defaults.includes(key));
+  for (const key of defaults) {
+    if (dashboardSectionOrder.includes(key)) continue;
+    const rank = defaults.indexOf(key);
+    const insertAt = dashboardSectionOrder.findIndex((current) => defaults.indexOf(current) > rank);
+    if (insertAt < 0) dashboardSectionOrder.push(key);
+    else dashboardSectionOrder.splice(insertAt, 0, key);
+  }
+}
 
 function rate(bytes) {
   if (!validNumber(bytes)) return "—";
@@ -39,18 +53,33 @@ function networkRate(bps) {
 }
 function setText(id, text) { $(id).textContent = text; }
 function applyDashboardSectionOrder() {
-  if (draggedDashboardSection) return;
   const root = $("dashboard-sections");
   for (const key of dashboardSectionOrder) {
     const slot = [...root.children].find((child) => child.dataset.dashboardSection === key);
     if (slot) root.appendChild(slot);
   }
 }
-function saveDashboardSectionOrder() {
-  const root = $("dashboard-sections");
-  dashboardSectionOrder = [...root.children].map((child) => child.dataset.dashboardSection)
-    .filter((key) => DASHBOARD_SECTION_KEYS.includes(key));
+function updateDashboardOrderButtons() {
+  for (const button of $("dashboard-sections").querySelectorAll("[data-order-section]")) {
+    const index = dashboardSectionOrder.indexOf(button.dataset.orderSection);
+    const direction = Number(button.dataset.orderDirection);
+    button.disabled = direction < 0 ? index <= 0 : index >= dashboardSectionOrder.length - 1;
+  }
+}
+function moveDashboardSection(key, direction) {
+  const index = dashboardSectionOrder.indexOf(key);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= dashboardSectionOrder.length) return;
+  [dashboardSectionOrder[index], dashboardSectionOrder[nextIndex]] =
+    [dashboardSectionOrder[nextIndex], dashboardSectionOrder[index]];
+  applyDashboardSectionOrder();
   try { localStorage.setItem(DASHBOARD_ORDER_KEY, JSON.stringify(dashboardSectionOrder)); } catch (_) {}
+  updateDashboardOrderButtons();
+}
+function sectionOrderButtons(key, title) {
+  const up = `<button type="button" data-order-section="${key}" data-order-direction="-1" aria-label="Move ${title} up" title="Move up"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4 13 12H3z"/></svg></button>`;
+  const down = `<button type="button" data-order-section="${key}" data-order-direction="1" aria-label="Move ${title} down" title="Move down"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10L8 12z"/></svg></button>`;
+  return `<div class="section-order-controls" role="group" aria-label="Reorder ${title}">${up}${down}</div>`;
 }
 
 const HISTORY_MARKS = [400, 120, 30, 10, 0];
@@ -205,14 +234,15 @@ function loadRemoteSources(localPrefix) {
       let id = /^[a-zA-Z0-9_-]{1,64}$/.test(item?.id || "") ? item.id : randomSourceId();
       while (ids.has(id)) id = randomSourceId();
       ids.add(id); used.add(prefix); endpoints.add(key);
-      result.push({id, domId: `source-${id}`, prefix, url, token: String(item?.token || ""), local: false, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false});
+      result.push({id, domId: `source-${id}`, prefix, url, token: String(item?.token || ""), local: false, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false});
     } catch (_) {}
   }
   return result;
 }
 
-const localSource = {id: "local", domId: "source-local", prefix: localPrefixFromStorage(), url: "/api/v1/metrics", local: true, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false};
+const localSource = {id: "local", domId: "source-local", prefix: localPrefixFromStorage(), url: "/api/v1/metrics", local: true, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false};
 let sources = [localSource, ...loadRemoteSources(localSource.prefix)];
+let renderedSourceLayout = "";
 let tokenRedeemed = false;
 let pollTimer = null;
 let pollRunning = false;
@@ -220,11 +250,12 @@ let pollAgain = false;
 
 function monitorData(source, kind) {
   const base = `${source.domId}-${kind}`;
+  const sectionKey = `${kind === "process" ? "gpu-processes" : kind}:${source.id}`;
   if (kind === "gpu") {
     const collapsed = source.gpuCollapsed;
     const sectionTitle = sources.length > 1 ? `GPU(${source.prefix})` : "GPU";
-    return `<section class="section source-section ${collapsed ? "source-section-collapsed" : ""}">
-      <div class="section-heading"><h2 data-section-drag="gpu" title="Drag to reorder sections">${esc(sectionTitle)}</h2><div class="section-meta source-heading-meta"><span>Average across GPUs</span><button class="collapse-toggle" type="button" data-collapse-source="${esc(source.id)}" data-collapse-kind="gpu" aria-expanded="${!collapsed}" aria-label="${collapsed ? "Expand" : "Collapse"} ${esc(sectionTitle)} graphs" title="${collapsed ? "Expand" : "Collapse"} GPU graphs"><span aria-hidden="true"></span></button></div></div>
+    return `<section class="section source-section ${collapsed ? "source-section-collapsed" : ""}" data-dashboard-section="${esc(sectionKey)}" data-monitor-section>
+      <div class="section-heading"><div class="section-title-with-order">${sectionOrderButtons(sectionKey, "GPU")}<h2>${esc(sectionTitle)}</h2></div><div class="section-meta source-heading-meta"><span>Average across GPUs</span><button class="collapse-toggle" type="button" data-collapse-source="${esc(source.id)}" data-collapse-kind="gpu" aria-expanded="${!collapsed}" aria-label="${collapsed ? "Expand" : "Collapse"} ${esc(sectionTitle)} graphs" title="${collapsed ? "Expand" : "Collapse"} GPU graphs"><span aria-hidden="true"></span></button></div></div>
       <div class="source-section-body" ${collapsed ? "hidden" : ""}><div class="history-grid">
         <article class="metric-card history-card"><div class="metric-head"><span class="metric-label">Average VRAM usage</span></div>
           <div id="${base}-vram-value" class="metric-value">—</div>
@@ -238,6 +269,14 @@ function monitorData(source, kind) {
         </article>
       </div></div></section>`;
   }
+  if (kind === "process") {
+    const collapsed = source.processCollapsed;
+    const sectionTitle = sources.length > 1 ? `GPU PROCESSES(${source.prefix})` : "GPU PROCESSES";
+    return `<section class="section source-section ${collapsed ? "source-section-collapsed" : ""}" data-dashboard-section="${esc(sectionKey)}" data-monitor-section>
+      <div class="section-heading"><div class="section-title-with-order">${sectionOrderButtons(sectionKey, "GPU PROCESSES")}<h2>${esc(sectionTitle)}</h2></div><div class="section-meta source-heading-meta"><span id="${source.domId}-process-count">— processes</span><button class="collapse-toggle" type="button" data-collapse-source="${esc(source.id)}" data-collapse-kind="process" aria-expanded="${!collapsed}" aria-label="${collapsed ? "Expand" : "Collapse"} ${esc(sectionTitle)}" title="${collapsed ? "Expand" : "Collapse"} GPU processes"><span aria-hidden="true"></span></button></div></div>
+      <div class="source-section-body" ${collapsed ? "hidden" : ""}><div class="table-card"><div class="table-scroll"><table><thead><tr><th>GPU</th><th>PID</th><th>USER</th><th class="num">GPU-MEM</th><th class="num">GPU-LOAD</th><th class="num">CPU-AVG</th><th class="num">MEM</th><th>TIME</th><th>COMMAND</th></tr></thead><tbody id="${source.domId}-process-rows"><tr><td colspan="9" class="empty-row">Waiting for process metrics…</td></tr></tbody></table></div></div></div>
+    </section>`;
+  }
   const collapsed = source.systemCollapsed;
   const sectionTitle = sources.length > 1 ? `SYSTEM(${source.prefix})` : "SYSTEM";
   const card = (metric, label, icon, detailLabel) => `<article class="metric-card" data-metric="${metric}">
@@ -246,8 +285,8 @@ function monitorData(source, kind) {
     <div class="chart-wrap"><div id="${base}-${metric}-axis" class="y-axis"></div><svg id="${base}-${metric}-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="${esc(source.prefix)} ${detailLabel} history"></svg></div>
     <div class="x-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
   </article>`;
-  return `<section class="section source-section ${collapsed ? "source-section-collapsed" : ""}">
-    <div class="section-heading"><h2 data-section-drag="system" title="Drag to reorder sections">${esc(sectionTitle)}</h2><div class="section-meta source-heading-meta"><span>400-second history</span><button class="collapse-toggle" type="button" data-collapse-source="${esc(source.id)}" data-collapse-kind="system" aria-expanded="${!collapsed}" aria-label="${collapsed ? "Expand" : "Collapse"} ${esc(sectionTitle)}" title="${collapsed ? "Expand" : "Collapse"} system history"><span aria-hidden="true"></span></button></div></div>
+  return `<section class="section source-section ${collapsed ? "source-section-collapsed" : ""}" data-dashboard-section="${esc(sectionKey)}" data-monitor-section>
+    <div class="section-heading"><div class="section-title-with-order">${sectionOrderButtons(sectionKey, "SYSTEM")}<h2>${esc(sectionTitle)}</h2></div><div class="section-meta source-heading-meta"><span>400-second history</span><button class="collapse-toggle" type="button" data-collapse-source="${esc(source.id)}" data-collapse-kind="system" aria-expanded="${!collapsed}" aria-label="${collapsed ? "Expand" : "Collapse"} ${esc(sectionTitle)}" title="${collapsed ? "Expand" : "Collapse"} system history"><span aria-hidden="true"></span></button></div></div>
     <div class="source-section-body" ${collapsed ? "hidden" : ""}><div class="metric-grid">
       ${card("ram", "RAM", "ram-icon", "RAM")}
       ${card("swap", "SWAP", "swap-icon", "SWAP")}
@@ -257,9 +296,28 @@ function monitorData(source, kind) {
 }
 
 function renderSourceGroups() {
-  $("gpu-source-groups").innerHTML = sources.map((source) => monitorData(source, "gpu")).join("");
-  $("system-source-groups").innerHTML = sources.map((source) => monitorData(source, "system")).join("");
-  for (const source of sources) if (source.data) renderSourceMetrics(source);
+  const root = $("dashboard-sections");
+  const layout = JSON.stringify(sources.map((source) => [source.id, source.prefix,
+    source.gpuCollapsed, source.systemCollapsed, source.processCollapsed]));
+  if (layout !== renderedSourceLayout) {
+    root.querySelectorAll("[data-monitor-section]").forEach((section) => section.remove());
+    const markup = [
+      ...sources.map((source) => monitorData(source, "gpu")),
+      ...sources.map((source) => monitorData(source, "system")),
+      ...sources.map((source) => monitorData(source, "process")),
+    ].join("");
+    const fragment = document.createElement("template");
+    fragment.innerHTML = markup;
+    root.append(fragment.content);
+    reconcileDashboardSectionOrder();
+    applyDashboardSectionOrder();
+    renderedSourceLayout = layout;
+  }
+  for (const source of sources) {
+    if (source.data) renderSourceMetrics(source);
+    renderProcessRows(source);
+  }
+  updateDashboardOrderButtons();
 }
 function renderSourceMetrics(source) {
   const data = source.data;
@@ -320,16 +378,17 @@ function renderGpuRows() {
   }).join("");
 }
 
-function renderProcesses() {
-  const processes = sources.flatMap((source) => (source.data?.processes || []).map((process) => ({source, process})));
-  const monitorSummary = sources.length > 1 ? ` · ${sources.filter((source) => source.data).length}/${sources.length} monitors` : "";
-  setText("process-count", `${processes.length} ${processes.length === 1 ? "process" : "processes"}${monitorSummary}`);
-  const body = $("process-rows");
+function renderProcessRows(source) {
+  const processes = source.data?.processes || [];
+  const countId = `${source.domId}-process-count`;
+  const body = $(`${source.domId}-process-rows`);
+  if (!body) return;
+  setText(countId, `${processes.length} ${processes.length === 1 ? "process" : "processes"}`);
   if (!processes.length) {
-    body.innerHTML = `<tr><td colspan="9" class="empty-row">No GPU processes reported by any monitor.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="empty-row">${source.data ? "No GPU processes reported by this monitor." : "Waiting for process metrics…"}</td></tr>`;
     return;
   }
-  body.innerHTML = processes.map(({source, process: p}) => `<tr>
+  body.innerHTML = processes.map((p) => `<tr>
     <td class="mono">${sources.length > 1 ? esc(source.prefix) : ""}${esc(p.gpu)}</td><td class="pid">${esc(p.pid)}</td><td class="process-user">${esc(p.user || "?")}</td>
     <td class="num mono">${p.gpu_memory_valid ? gib(p.gpu_memory) : "—"}</td>
     <td class="num mono">${p.sm_valid ? percent(p.sm) : "—"}</td><td class="num mono">${p.cpu_valid ? percent(p.cpu) : "—"}</td>
@@ -380,9 +439,7 @@ function updatePrefixSuggestion() {
 function renderDashboard() {
   $("local-prefix-control").hidden = sources.length <= 1;
   renderGpuRows();
-  renderProcesses();
-  if (!draggedDashboardSection && !sectionDragCandidate) renderSourceGroups();
-  applyDashboardSectionOrder();
+  renderSourceGroups();
   renderMonitorList();
 }
 
@@ -513,7 +570,7 @@ $("monitor-form").addEventListener("submit", (event) => {
     setFormMessage("This metrics endpoint is already monitored.", true);
     return;
   }
-  const source = {id: randomSourceId(), domId: "", prefix, url, token, local: false, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false};
+  const source = {id: randomSourceId(), domId: "", prefix, url, token, local: false, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false};
   source.domId = `source-${source.id}`;
   sources.push(source);
   saveSources();
@@ -538,90 +595,21 @@ $("monitor-list").addEventListener("click", (event) => {
   poll();
 });
 
-for (const groupId of ["gpu-source-groups", "system-source-groups"]) {
-  $(groupId).addEventListener("click", (event) => {
-    const button = event.target.closest("[data-collapse-source]");
-    if (!button) return;
-    const source = sources.find((item) => item.id === button.dataset.collapseSource);
-    if (!source) return;
-    if (button.dataset.collapseKind === "gpu") source.gpuCollapsed = !source.gpuCollapsed;
-    else source.systemCollapsed = !source.systemCollapsed;
-    renderSourceGroups();
-  });
-}
-
 const dashboardRoot = $("dashboard-sections");
-let sectionDragCandidate = null;
-function finishDashboardDrag() {
-  if (!draggedDashboardSection) return;
-  dashboardRoot.classList.remove("section-drag-active");
-  dashboardRoot.querySelectorAll(".section-dragging,.section-drop-target").forEach((node) => {
-    node.classList.remove("section-dragging", "section-drop-target");
-  });
-  draggedDashboardSection = null;
-  dashboardDropTarget = null;
-  renderDashboard();
-}
-function updateDashboardDropTarget(clientX, clientY) {
-  const hit = document.elementFromPoint(clientX, clientY);
-  const target = hit?.closest("[data-dashboard-section]");
-  if (!target || target.dataset.dashboardSection === draggedDashboardSection) {
-    dashboardDropTarget?.classList.remove("section-drop-target");
-    dashboardDropTarget = null;
+dashboardRoot.addEventListener("click", (event) => {
+  const collapseButton = event.target.closest("[data-collapse-source]");
+  if (collapseButton) {
+    const source = sources.find((item) => item.id === collapseButton.dataset.collapseSource);
+    if (!source) return;
+    if (collapseButton.dataset.collapseKind === "gpu") source.gpuCollapsed = !source.gpuCollapsed;
+    else if (collapseButton.dataset.collapseKind === "system") source.systemCollapsed = !source.systemCollapsed;
+    else source.processCollapsed = !source.processCollapsed;
+    renderSourceGroups();
     return;
   }
-  if (dashboardDropTarget !== target) {
-    dashboardDropTarget?.classList.remove("section-drop-target");
-    dashboardDropTarget = target;
-    dashboardDropTarget.classList.add("section-drop-target");
-  }
-}
-dashboardRoot.addEventListener("pointerdown", (event) => {
-  const handle = event.target.closest("[data-section-drag]");
-  if (!handle || event.button !== 0 || !event.isPrimary) return;
-  sectionDragCandidate = {
-    key: handle.dataset.sectionDrag,
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    started: false,
-  };
-  try { handle.setPointerCapture(event.pointerId); } catch (_) {}
+  const orderButton = event.target.closest("[data-order-section]");
+  if (orderButton) moveDashboardSection(orderButton.dataset.orderSection, Number(orderButton.dataset.orderDirection));
 });
-document.addEventListener("pointermove", (event) => {
-  const candidate = sectionDragCandidate;
-  if (!candidate || candidate.pointerId !== event.pointerId) return;
-  if (!candidate.started) {
-    if (Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY) < 6) return;
-    const slot = [...dashboardRoot.children].find((child) => child.dataset.dashboardSection === candidate.key);
-    if (!slot) { sectionDragCandidate = null; return; }
-    draggedDashboardSection = candidate.key;
-    candidate.started = true;
-    dashboardRoot.classList.add("section-drag-active");
-    slot.classList.add("section-dragging");
-  }
-  event.preventDefault();
-  updateDashboardDropTarget(event.clientX, event.clientY);
-});
-function endSectionPointer(event, commit) {
-  const candidate = sectionDragCandidate;
-  if (!candidate || candidate.pointerId !== event.pointerId) return;
-  if (candidate.started && commit) {
-    updateDashboardDropTarget(event.clientX, event.clientY);
-    const source = [...dashboardRoot.children].find((child) => child.dataset.dashboardSection === draggedDashboardSection);
-    const target = dashboardDropTarget;
-    if (source && target && source !== target) {
-      const rect = target.getBoundingClientRect();
-      if (event.clientY > rect.top + rect.height / 2) target.after(source);
-      else target.before(source);
-      saveDashboardSectionOrder();
-    }
-  }
-  sectionDragCandidate = null;
-  finishDashboardDrag();
-}
-document.addEventListener("pointerup", (event) => endSectionPointer(event, true));
-document.addEventListener("pointercancel", (event) => endSectionPointer(event, false));
 
 $("sign-in-form").addEventListener("submit", (event) => {
   event.preventDefault();

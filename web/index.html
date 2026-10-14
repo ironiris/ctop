@@ -24,16 +24,8 @@
   <main>
     <div id="dashboard-sections">
       <section class="section" data-dashboard-section="gpu-list" aria-labelledby="gpu-heading">
-        <div class="section-heading"><div class="gpu-list-title"><h2 id="gpu-heading" data-section-drag="gpu-list" title="Drag to reorder sections">GPU LIST</h2><label id="local-prefix-control" class="prefix-control" hidden>Prefix<input id="local-prefix" value="A" maxlength="3" aria-label="Local GPU prefix"></label></div><span id="gpu-count" class="section-meta">— devices</span></div>
+        <div class="section-heading"><div class="gpu-list-title"><div class="section-order-controls" role="group" aria-label="Reorder GPU LIST"><button type="button" data-order-section="gpu-list" data-order-direction="-1" aria-label="Move GPU LIST up" title="Move up" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4 13 12H3z"/></svg></button><button type="button" data-order-section="gpu-list" data-order-direction="1" aria-label="Move GPU LIST down" title="Move down"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10L8 12z"/></svg></button></div><h2 id="gpu-heading">GPU LIST</h2><label id="local-prefix-control" class="prefix-control" hidden>Prefix<input id="local-prefix" value="A" maxlength="3" aria-label="Local GPU prefix"></label></div><span id="gpu-count" class="section-meta">— devices</span></div>
         <div class="table-card gpu-status-card"><div class="table-scroll"><table class="gpu-table"><thead><tr><th>GPU</th><th>NAME</th><th>TEMP</th><th>POWER DRAW/LIMIT</th><th>VRAM USED/TOTAL</th><th class="num">GPU LOAD</th><th class="gpu-meter-column"><div class="gpu-meter-heading"><span>100%</span><span>VRAM ← │ → GPU</span><span>100%</span></div></th></tr></thead><tbody id="gpu-rows"><tr><td colspan="7" class="empty-row">Waiting for GPU metrics…</td></tr></tbody></table></div></div>
-      </section>
-
-      <div id="gpu-source-groups" data-dashboard-section="gpu"></div>
-      <div id="system-source-groups" data-dashboard-section="system"></div>
-
-      <section class="section" data-dashboard-section="gpu-processes" aria-labelledby="process-heading">
-        <div class="section-heading"><h2 id="process-heading" data-section-drag="gpu-processes" title="Drag to reorder sections">GPU PROCESSES</h2><span id="process-count" class="section-meta">— processes</span></div>
-        <div class="table-card"><div class="table-scroll"><table><thead><tr><th>GPU</th><th>PID</th><th>USER</th><th class="num">GPU-MEM</th><th class="num">GPU-LOAD</th><th class="num">CPU-AVG</th><th class="num">MEM</th><th>TIME</th><th>COMMAND</th></tr></thead><tbody id="process-rows"><tr><td colspan="9" class="empty-row">Waiting for process metrics…</td></tr></tbody></table></div></div>
       </section>
     </div>
     <section class="section" aria-labelledby="monitor-heading">
