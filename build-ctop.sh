@@ -101,7 +101,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
     exit 0
 fi
 
-for asset in index.html style.css app.js favicon.svg; do
+for asset in index.html style.css app.js html2canvas.min.js favicon.svg; do
     if [ ! -f "$ROOT/web/$asset" ]; then
         echo "web asset not found: $ROOT/web/$asset" >&2
         exit 1
@@ -130,6 +130,7 @@ emit_asset() {
     emit_asset CTOP_WEB_INDEX "$ROOT/web/index.html"
     emit_asset CTOP_WEB_CSS "$ROOT/web/style.css"
     emit_asset CTOP_WEB_JS "$ROOT/web/app.js"
+    emit_asset CTOP_WEB_HTML2CANVAS "$ROOT/web/html2canvas.min.js"
     emit_asset CTOP_WEB_FAVICON "$ROOT/web/favicon.svg"
     printf '#endif\n'
 } > "$TMP/web_assets.h"

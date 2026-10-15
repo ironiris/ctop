@@ -33,7 +33,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.3.1"
+#define CTOP_VERSION "0.3.2"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -2946,6 +2946,9 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
     } else if (strcmp(path, "/app.js") == 0) {
         web_send_response(fd, 200, "OK", "text/javascript; charset=utf-8",
                           CTOP_WEB_JS, CTOP_WEB_JS_SIZE);
+    } else if (strcmp(path, "/html2canvas.min.js") == 0) {
+        web_send_response(fd, 200, "OK", "text/javascript; charset=utf-8",
+                          CTOP_WEB_HTML2CANVAS, CTOP_WEB_HTML2CANVAS_SIZE);
     } else if (strcmp(path, "/favicon.svg") == 0 || strcmp(path, "/favicon.ico") == 0) {
         /* Browsers request /favicon.ico unprompted; the same vector icon answers both. */
         web_send_response(fd, 200, "OK", "image/svg+xml",

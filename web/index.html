@@ -18,7 +18,9 @@
     <span id="live-pill" class="live-pill pending"><span class="live-dot"></span><span id="live-label">Connecting</span></span>
     <span id="connection" class="status-note" hidden>Connected</span>
     <span id="updated" class="updated">Waiting for metrics…</span>
+    <div id="capture-status" class="capture-toast" role="status" aria-live="polite" hidden></div>
     <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle color theme" title="Toggle theme">◐</button>
+    <button id="capture-button" class="icon-button" type="button" aria-label="Copy dashboard image to clipboard" title="Copy dashboard image to clipboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6 9.5 4h5L16 6h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3Z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
   </header>
 
   <main>
@@ -51,6 +53,7 @@
     </form>
   </div>
 
+  <script src="/html2canvas.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -628,6 +628,104 @@ $("theme-toggle").addEventListener("click", () => {
   try { localStorage.setItem("ctop-theme", next); } catch (_) {}
 });
 
+let captureToastTimer = 0;
+function showCaptureToast(message, isError = false) {
+  const toast = $("capture-status");
+  toast.textContent = message;
+  toast.classList.toggle("error", isError);
+  toast.hidden = false;
+  clearTimeout(captureToastTimer);
+  captureToastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
+}
+
+function dashboardScreenshotBlob() {
+  const topbar = document.querySelector(".topbar");
+  const footer = document.querySelector("footer");
+  if (!topbar || !footer || typeof window.html2canvas !== "function") {
+    return Promise.reject(new Error("Dashboard capture is unavailable"));
+  }
+
+  const topbarRect = topbar.getBoundingClientRect();
+  const footerRect = footer.getBoundingClientRect();
+  const sidePadding = 10;
+  const left = Math.max(0, Math.floor(topbarRect.left + window.scrollX - sidePadding));
+  const right = Math.min(document.documentElement.scrollWidth,
+                         Math.ceil(topbarRect.right + window.scrollX + sidePadding));
+  const bottom = Math.floor(footerRect.top + window.scrollY);
+  const width = right - left;
+  if (width <= 0 || bottom <= 0) return Promise.reject(new Error("Invalid dashboard bounds"));
+
+  const scale = Math.min(window.devicePixelRatio || 1, 2);
+  return window.html2canvas(document.body, {
+    windowWidth: document.documentElement.clientWidth,
+    windowHeight: window.innerHeight,
+    scrollX: 0,
+    scrollY: 0,
+    scale,
+    foreignObjectRendering: true,
+    backgroundColor: getComputedStyle(document.body).backgroundColor,
+    useCORS: true,
+    logging: false,
+    onclone: (documentClone) => documentClone.getElementById("capture-button")?.removeAttribute("disabled"),
+    ignoreElements: (element) => element.tagName === "FOOTER" || element.id === "capture-status",
+  }).then((source) => new Promise((resolve, reject) => {
+    const sourceScale = source.width / document.documentElement.clientWidth;
+    const crop = document.createElement("canvas");
+    crop.width = Math.round(width * sourceScale);
+    crop.height = Math.min(Math.round(bottom * sourceScale), source.height);
+    const context = crop.getContext("2d");
+    if (!context || crop.width <= 0 || crop.height <= 0) {
+      reject(new Error("Screenshot crop failed"));
+      return;
+    }
+    context.drawImage(source, Math.round(left * sourceScale), 0, crop.width, crop.height,
+                      0, 0, crop.width, crop.height);
+    crop.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG encoding failed")), "image/png");
+  }));
+}
+
+function downloadScreenshot(blob) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `ctop-dashboard-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+$("capture-button").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+
+  let imagePromise = null;
+  try {
+    if (!window.isSecureContext || !navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      downloadScreenshot(await dashboardScreenshotBlob());
+      showCaptureToast("Clipboard unavailable; image downloaded", true);
+      return;
+    }
+
+    imagePromise = dashboardScreenshotBlob();
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": imagePromise })]);
+    showCaptureToast("Dashboard copied to clipboard");
+  } catch (error) {
+    console.error("Dashboard capture failed:", error?.message || String(error), error?.stack || "");
+    if (imagePromise) {
+      try {
+        downloadScreenshot(await imagePromise);
+        showCaptureToast("Clipboard failed; image downloaded", true);
+      } catch (_) {
+        showCaptureToast("Could not copy or download dashboard", true);
+      }
+    } else {
+      showCaptureToast("Could not capture dashboard", true);
+    }
+  } finally {
+    button.disabled = false;
+  }
+});
+
 renderDashboard();
 renderMonitorList();
 poll();
