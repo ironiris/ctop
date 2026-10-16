@@ -11,7 +11,7 @@ A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, 
 ## Features
 
 - GPU temperature, power, memory, and utilization
-- GPU process table with `GPU-LOAD`, `CPU-AVG`, and `MEM` percentage columns
+- GPU process table with `GPU-MEM`, `GPU-LOAD`, `CPU-AVG`, and per-process host RAM percentage (`MEM`)
 - RAM and SWAP usage with history graphs
 - Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
 - GPU memory and utilization history graphs
@@ -138,7 +138,7 @@ Useful options:
 
 Use `-p 8079` to run the web dashboard alongside the existing terminal UI. Open `http://<server-address>:8079/` in a browser. When running with the TUI, the detected web monitor address (for example, `http://192.168.0.177:8079`) appears in the TUI's upper-right corner. With `--localhost`, it displays `http://127.0.0.1:8079`. Add `--no-tui` to run the web dashboard without the terminal UI. Use the camera icon in the dashboard header to copy a screenshot to the clipboard. If clipboard copying is unavailable, the image is saved as a file.
 
-Add another ctop address under `ADDITIONAL MONITORS` to register the same monitor in both the TUI and web dashboard. Monitors added from the TUI also appear in the web dashboard. A duplicate is identified only when host/address, port, and token all match; a different token is treated as a separate monitor. Prefixes (`A`, `B`, and so on) are assigned automatically. If a remote connection drops and is detected again, the web page reloads to update its connection state. TUI remote monitor metrics are included in the web API. Without `--token`, other network users can view them and change the monitor list, so set `--token` when exposing the server to a network. If enabled, sign in to the current dashboard first. The form's `TOKEN` authenticates the remote ctop and is separate from the dashboard token. Remote addresses must be reachable from the ctop server. TUI remote connections use HTTP only; do not send tokens over untrusted networks. Section order and collapse state are configured separately in the web browser and TUI.
+Add another ctop address under `ADDITIONAL MONITORS` to register the same monitor in both the TUI and web dashboard. Monitors added from the TUI also appear in the web dashboard. A duplicate is identified only when host/address, port, and token all match; a different token is treated as a separate monitor. Prefixes (`A`, `B`, and so on) are assigned automatically. If a remote connection drops and is detected again, the web page reloads to update its connection state. TUI remote monitor metrics are included in the web API. Without `--token`, other network users can view them and change the monitor list, so set `--token` when exposing the server to a network. If enabled, sign in to the current dashboard first. The form's `TOKEN` authenticates the remote ctop and is separate from the dashboard token. In `GPU PROCESSES`, `GPU-MEM` is the process's GPU memory allocation, while `MEM` is that process's RSS as a percentage of the monitored host's total RAM. `SYSTEM` RAM usage is calculated for the whole host using `MemAvailable`, so it differs from `MEM` and will not equal the sum of per-process `MEM` values. Remote addresses must be reachable from the ctop server. TUI remote connections use HTTP only; do not send tokens over untrusted networks. Section order and collapse state are configured separately in the web browser and TUI.
 
 Current metrics and graph history are also available as JSON:
 
