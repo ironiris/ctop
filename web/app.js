@@ -7,7 +7,6 @@ const number = (value, digits = 1) => validNumber(value) ? Number(value).toLocal
 const gib = (bytes, digits = 1) => validNumber(bytes) ? `${number(Number(bytes) / 1073741824, digits)}GB` : "—";
 const percent = (value) => validNumber(value) ? `${number(value, 1)}%` : "—";
 const MONITORS_KEY = "ctop-monitors-v1";
-const LOCAL_PREFIX_KEY = "ctop-local-prefix-v1";
 const DASHBOARD_ORDER_KEY = "ctop-dashboard-section-order-v1";
 function loadDashboardSectionOrder() {
   let stored;
@@ -207,12 +206,13 @@ function endpointKey(address) {
 function localEndpointKey() {
   return endpointKey(new URL("/api/v1/metrics", window.location.href).href);
 }
+function remoteTupleKey(address, token = "") {
+  const url = new URL(address, window.location.href);
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  return `${url.hostname.toLowerCase()}|${port}|${String(token)}`;
+}
 function randomSourceId() {
   return `remote-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-function localPrefixFromStorage() {
-  try { return normalizePrefix(localStorage.getItem(LOCAL_PREFIX_KEY)) || "A"; }
-  catch (_) { return "A"; }
 }
 function loadRemoteSources(localPrefix) {
   let stored;
@@ -220,28 +220,45 @@ function loadRemoteSources(localPrefix) {
   catch (_) { stored = []; }
   if (!Array.isArray(stored)) return [];
   const used = new Set([localPrefix]);
-  const endpoints = new Set([localEndpointKey()]);
+  const localEndpoint = localEndpointKey();
+  const tuples = new Set();
   const ids = new Set(["local"]);
   const result = [];
   for (const item of stored) {
     try {
-      const url = normalizeMetricsUrl(item?.url);
-      const key = endpointKey(url);
-      if (endpoints.has(key)) continue;
+      let url = normalizeMetricsUrl(item?.url);
+      const parsedUrl = new URL(url);
+      const queryToken = parsedUrl.searchParams.get("token") || "";
+      const token = String(item?.token || queryToken);
+      if (queryToken) {
+        parsedUrl.searchParams.delete("token");
+        url = parsedUrl.href;
+      }
+      const endpoint = endpointKey(url);
+      const tuple = remoteTupleKey(url, token);
+      if (endpoint === localEndpoint || tuples.has(tuple)) continue;
       let prefix = normalizePrefix(item?.prefix);
       if (!prefix || used.has(prefix)) prefix = nextAvailablePrefix(used);
       if (!prefix) continue;
-      let id = /^[a-zA-Z0-9_-]{1,64}$/.test(item?.id || "") ? item.id : randomSourceId();
+      const serverId = Number.isSafeInteger(Number(item?.serverId)) && Number(item.serverId) > 0
+        ? Number(item.serverId) : 0;
+      let id = serverId ? `tui-${serverId}`
+        : /^[a-zA-Z0-9_-]{1,64}$/.test(item?.id || "") ? item.id : randomSourceId();
       while (ids.has(id)) id = randomSourceId();
-      ids.add(id); used.add(prefix); endpoints.add(key);
-      result.push({id, domId: `source-${id}`, prefix, url, token: String(item?.token || ""), local: false, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false});
+      ids.add(id); used.add(prefix); tuples.add(tuple);
+      result.push({id, domId: `source-${id}`, serverId, prefix, url, token, local: false,
+        webConfigured: true, serverManaged: serverId > 0, migrationPending: true,
+        data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false});
     } catch (_) {}
   }
   return result;
 }
 
-const localSource = {id: "local", domId: "source-local", prefix: localPrefixFromStorage(), url: "/api/v1/metrics", local: true, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false};
+const localSource = {id: "local", domId: "source-local", prefix: "A", url: "/api/v1/metrics", local: true, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false};
 let sources = [localSource, ...loadRemoteSources(localSource.prefix)];
+let lastMigrationAttempt = 0;
+let migrationRunning = false;
+let remoteSharingProtected = false;
 let renderedSourceLayout = "";
 let tokenRedeemed = false;
 let pollTimer = null;
@@ -257,9 +274,9 @@ function monitorData(source, kind) {
     return `<section class="section source-section ${collapsed ? "source-section-collapsed" : ""}" data-dashboard-section="${esc(sectionKey)}" data-monitor-section>
       <div class="section-heading"><div class="section-title-with-order">${sectionOrderButtons(sectionKey, "GPU")}<h2>${esc(sectionTitle)}</h2></div><div class="section-meta source-heading-meta"><span>Average across GPUs</span><button class="collapse-toggle" type="button" data-collapse-source="${esc(source.id)}" data-collapse-kind="gpu" aria-expanded="${!collapsed}" aria-label="${collapsed ? "Expand" : "Collapse"} ${esc(sectionTitle)} graphs" title="${collapsed ? "Expand" : "Collapse"} GPU graphs"><span aria-hidden="true"></span></button></div></div>
       <div class="source-section-body" ${collapsed ? "hidden" : ""}><div class="history-grid">
-        <article class="metric-card history-card"><div class="metric-head"><span class="metric-label">Average VRAM usage</span></div>
+        <article class="metric-card history-card"><div class="metric-head"><span class="metric-label">Average GPU MEM usage</span></div>
           <div id="${base}-vram-value" class="metric-value">—</div>
-          <div class="chart-wrap"><div id="${base}-vram-axis" class="y-axis"></div><svg id="${base}-vram-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="${esc(source.prefix)} VRAM history"></svg></div>
+          <div class="chart-wrap"><div id="${base}-vram-axis" class="y-axis"></div><svg id="${base}-vram-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="${esc(source.prefix)} GPU MEM history"></svg></div>
           <div class="x-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
         </article>
         <article class="metric-card history-card"><div class="metric-head"><span class="metric-label">Average GPU utilization</span></div>
@@ -372,7 +389,7 @@ function renderGpuRows() {
       <td class="mono">${gpu.temperature_valid ? `${number(gpu.temperature, 0)}°C` : "—"}</td>
       <td class="mono">${power}</td><td class="mono">${vram}</td>
       <td class="num mono">${gpuPercent === null ? "—" : percent(gpuPercent)}</td>
-      <td class="gpu-meter-cell"><div class="gpu-usage-meter" role="img" aria-label="VRAM ${vramPercent === null ? "unavailable" : percent(vramPercent)}, GPU ${gpuPercent === null ? "unavailable" : percent(gpuPercent)}">
+      <td class="gpu-meter-cell"><div class="gpu-usage-meter" role="img" aria-label="GPU MEM ${vramPercent === null ? "unavailable" : percent(vramPercent)}, GPU ${gpuPercent === null ? "unavailable" : percent(gpuPercent)}">
         <div class="gpu-meter-half vram-meter"><span style="width:${vramWidth}%"></span></div><div class="gpu-meter-divider"></div>
         <div class="gpu-meter-half gpu-meter"><span style="width:${gpuWidth}%"></span></div></div></td></tr>`;
   }).join("");
@@ -398,13 +415,9 @@ function renderProcessRows(source) {
 
 function saveSources() {
   try {
-    localStorage.setItem(MONITORS_KEY, JSON.stringify(sources.filter((source) => !source.local)
-      .map(({id, prefix, url, token}) => ({id, prefix, url, token}))));
-    localStorage.setItem(LOCAL_PREFIX_KEY, localSource.prefix);
+    localStorage.setItem(MONITORS_KEY, JSON.stringify(sources.filter((source) => source.webConfigured)
+      .map(({id, serverId, prefix, url, token}) => ({id, serverId, prefix, url, token}))));
   } catch (_) {}
-}
-function usedPrefixes(exceptSource = null) {
-  return new Set(sources.filter((source) => source !== exceptSource).map((source) => source.prefix));
 }
 function setFormMessage(message, error = false) {
   const node = $("monitor-form-message");
@@ -419,11 +432,83 @@ function displayMetricsAddress(address) {
     return url.href;
   } catch (_) { return address; }
 }
+function syncServerMonitors(data) {
+  const previous = sources.filter((source) => !source.local);
+  const matched = new Set();
+  const managed = [];
+  const monitors = Array.isArray(data?.monitors) ? data.monitors : [];
+  remoteSharingProtected = Boolean(data?.monitors_protected);
+  for (const monitor of monitors) {
+    const serverId = Number(monitor?.id);
+    if (!Number.isSafeInteger(serverId) || serverId < 1) continue;
+    let source = previous.find((item) => item.serverId === serverId);
+    if (!source) source = {local: false, webConfigured: false, token: "", gpuCollapsed: false,
+      systemCollapsed: false, processCollapsed: false};
+    source.serverId = serverId;
+    source.id = `tui-${serverId}`;
+    source.domId = `source-${source.id}`;
+    source.prefix = normalizePrefix(monitor.prefix) || source.prefix || "B";
+    source.url = String(monitor.address || source.url || "");
+    source.serverManaged = true;
+    source.migrationPending = false;
+    source.data = monitor.metrics && typeof monitor.metrics === "object" ? monitor.metrics : null;
+    source.error = monitor.connected ? "" : String(monitor.status || "Connection lost");
+    source.errorCode = 0;
+    matched.add(serverId);
+    managed.push(source);
+  }
+  const pending = previous.filter((source) => source.webConfigured &&
+    (source.migrationPending || (remoteSharingProtected && !matched.has(source.serverId))));
+  for (const source of pending) {
+    source.serverManaged = true;
+    if (remoteSharingProtected && !source.migrationPending)
+      source.error = "Shared monitors require --token or --localhost";
+    managed.push(source);
+  }
+  sources = [localSource, ...managed];
+  localSource.prefix = monitors.length ? "A" : "";
+  saveSources();
+}
+async function migrateSavedMonitors() {
+  if (migrationRunning || Date.now() - lastMigrationAttempt < 5000) return;
+  const pending = sources.filter((source) => source.webConfigured && source.migrationPending);
+  if (!pending.length) return;
+  migrationRunning = true;
+  lastMigrationAttempt = Date.now();
+  try {
+    for (const source of pending) {
+      try {
+        const response = await fetch("/api/v1/monitors", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({address: source.url, token: source.token})
+        });
+        if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+        const result = await response.json();
+        source.serverId = Number(result.id);
+        source.id = `tui-${source.serverId}`;
+        source.domId = `source-${source.id}`;
+        source.prefix = normalizePrefix(result.prefix) || source.prefix;
+        source.url = result.address || source.url;
+        source.serverManaged = true;
+        source.migrationPending = false;
+        source.error = "";
+        saveSources();
+      } catch (error) {
+        source.serverManaged = true;
+        source.error = String(error?.message || "Could not add shared monitor").replace(/^Failed to fetch$/, "Connection failed");
+      }
+    }
+  } finally {
+    migrationRunning = false;
+  }
+}
 function renderMonitorList() {
   const root = $("monitor-list");
   const remotes = sources.filter((source) => !source.local);
   if (!remotes.length) {
-    root.innerHTML = `<li class="monitor-empty">No additional monitors.</li>`;
+    root.innerHTML = remoteSharingProtected
+      ? `<li class="monitor-empty">TUI monitors require --token or --localhost to share with the Web UI.</li>`
+      : `<li class="monitor-empty">No additional monitors.</li>`;
     return;
   }
   root.innerHTML = remotes.map((source) => `<li class="monitor-item">
@@ -433,11 +518,7 @@ function renderMonitorList() {
     <button type="button" class="monitor-remove" data-remove-source="${esc(source.id)}" aria-label="Remove monitor ${esc(source.prefix)}" title="Remove monitor">×</button>
   </li>`).join("");
 }
-function updatePrefixSuggestion() {
-  $("monitor-prefix").value = nextAvailablePrefix(usedPrefixes());
-}
 function renderDashboard() {
-  $("local-prefix-control").hidden = sources.length <= 1;
   renderGpuRows();
   renderSourceGroups();
   renderMonitorList();
@@ -479,36 +560,38 @@ async function poll() {
   if (pollRunning) { pollAgain = true; return; }
   pollRunning = true;
   try {
-    const currentSources = [...sources];
+    const priorErrors = new Map(sources.map((source) => [source.id, Boolean(source.error)]));
+    const localWasDisconnected = Boolean(localSource.error);
+    await migrateSavedMonitors();
     let localUnauthorized = false;
-    await Promise.all(currentSources.map(async (source) => {
-      try {
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 5000);
-        let response;
-        const options = {mode: source.local ? "same-origin" : "cors", signal: controller.signal};
-        if (!source.local && source.token) options.headers = {Authorization: `Bearer ${source.token}`};
-        try {
-          response = await fetch(source.url, options);
-        } finally {
-          window.clearTimeout(timeout);
-        }
-        if (response.status === 401 && source.local) localUnauthorized = true;
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        if (!data || typeof data !== "object" || !Array.isArray(data.gpus) || !data.history)
-          throw new Error("Invalid metrics response");
-        source.data = data;
-        source.error = "";
-        source.errorCode = 0;
-      } catch (error) {
-        source.error = String(error?.message || "Connection failed").replace(/^Failed to fetch$/, "Connection failed");
-        const match = source.error.match(/HTTP (\d+)/);
-        source.errorCode = match ? Number(match[1]) : 0;
-      }
-    }));
+    try {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
+      let response;
+      try { response = await fetch(localSource.url, {signal: controller.signal, cache: "no-store"}); }
+      finally { window.clearTimeout(timeout); }
+      if (response.status === 401) localUnauthorized = true;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data || typeof data !== "object" || !Array.isArray(data.gpus) || !data.history)
+        throw new Error("Invalid metrics response");
+      localSource.data = data;
+      localSource.error = "";
+      localSource.errorCode = 0;
+      syncServerMonitors(data);
+    } catch (error) {
+      localSource.error = String(error?.message || "Connection failed").replace(/^Failed to fetch$/, "Connection failed");
+      const match = localSource.error.match(/HTTP (\d+)/);
+      localSource.errorCode = match ? Number(match[1]) : 0;
+    }
     renderDashboard();
-    const failed = currentSources.filter((source) => source.error).length;
+    const recovered = (localWasDisconnected && !localSource.error) ||
+      sources.some((source) => priorErrors.get(source.id) && !source.error);
+    if (recovered) {
+      window.location.reload();
+      return;
+    }
+    const failed = sources.filter((source) => source.error).length;
     if (localUnauthorized) await handleUnauthorized();
     else if (failed) setStatus(`${failed} monitor${failed === 1 ? "" : "s"} offline · retrying`);
     else setConnected();
@@ -524,75 +607,97 @@ async function poll() {
   }
 }
 
-$("local-prefix").value = localSource.prefix;
-$("monitor-prefix").value = nextAvailablePrefix(usedPrefixes());
-$("local-prefix").addEventListener("change", () => {
-  const prefix = normalizePrefix($("local-prefix").value);
-  if (!prefix) {
-    $("local-prefix").value = localSource.prefix;
-    setFormMessage("Prefixes must use 1–3 letters (A–Z).", true);
-    return;
-  }
-  if (usedPrefixes(localSource).has(prefix)) {
-    $("local-prefix").value = localSource.prefix;
-    setFormMessage(`Prefix ${prefix} is already in use.`, true);
-    return;
-  }
-  localSource.prefix = prefix;
-  $("local-prefix").value = prefix;
-  saveSources();
-  updatePrefixSuggestion();
-  setFormMessage("");
-  renderDashboard();
-});
-
 $("monitor-url").addEventListener("blur", () => {
   const field = $("monitor-url");
   if (!field.value.trim()) return;
   try { field.value = normalizeMetricsUrl(field.value); } catch (_) {}
 });
 
-$("monitor-form").addEventListener("submit", (event) => {
+$("monitor-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   let url;
   try { url = normalizeMetricsUrl($("monitor-url").value); }
   catch (error) { setFormMessage(error.message, true); return; }
-  const prefix = normalizePrefix($("monitor-prefix").value);
-  if (!prefix) { setFormMessage("Prefixes must use 1–3 letters (A–Z).", true); return; }
-  const token = $("monitor-token").value.trim();
+  let token = $("monitor-token").value.trim();
+  const parsedUrl = new URL(url);
+  const queryToken = parsedUrl.searchParams.get("token") || "";
+  if (token && queryToken && token !== queryToken) {
+    setFormMessage("Use either the Token field or token query parameter, not both.", true);
+    return;
+  }
+  if (!token && queryToken) token = queryToken;
+  if (queryToken) {
+    parsedUrl.searchParams.delete("token");
+    url = parsedUrl.href;
+  }
   if (token && !/^[A-Za-z0-9._~-]{8,128}$/.test(token)) {
     setFormMessage("Token must be 8–128 characters using A–Z, a–z, 0–9, ., _, -, or ~.", true);
     return;
   }
-  if (usedPrefixes().has(prefix)) { setFormMessage(`Prefix ${prefix} is already in use.`, true); return; }
-  const key = endpointKey(url);
-  if (sources.some((source) => endpointKey(source.url) === key)) {
-    setFormMessage("This metrics endpoint is already monitored.", true);
-    return;
+  const button = $("monitor-form").querySelector("button[type=submit]");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/v1/monitors", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({address: url, token})
+    });
+    if (response.status === 401) { await handleUnauthorized(); return; }
+    if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+    const result = await response.json();
+    const serverId = Number(result.id);
+    let source = sources.find((item) => item.serverId === serverId);
+    if (!source) {
+      source = {id: `tui-${serverId}`, domId: `source-tui-${serverId}`, serverId,
+        prefix: result.prefix, url: result.address || url, token, local: false,
+        webConfigured: true, serverManaged: true, migrationPending: false,
+        data: null, error: "", errorCode: 0, gpuCollapsed: false,
+        systemCollapsed: false, processCollapsed: false};
+      sources.push(source);
+    }
+    source.webConfigured = true;
+    source.serverManaged = true;
+    source.migrationPending = false;
+    source.token = token;
+    source.prefix = normalizePrefix(result.prefix) || source.prefix;
+    source.url = result.address || url;
+    saveSources();
+    $("monitor-url").value = "";
+    $("monitor-token").value = "";
+    setFormMessage(result.duplicate
+      ? `Monitor ${source.prefix} is already configured in the TUI.`
+      : `Monitor ${source.prefix} added to the shared TUI/Web monitor list.`);
+    renderDashboard();
+    if (pollTimer) clearTimeout(pollTimer);
+    poll();
+  } catch (error) {
+    setFormMessage(error.message || "Could not add monitor.", true);
+  } finally {
+    button.disabled = false;
   }
-  const source = {id: randomSourceId(), domId: "", prefix, url, token, local: false, data: null, error: "", errorCode: 0, gpuCollapsed: false, systemCollapsed: false, processCollapsed: false};
-  source.domId = `source-${source.id}`;
-  sources.push(source);
-  saveSources();
-  $("monitor-url").value = "";
-  $("monitor-token").value = "";
-  updatePrefixSuggestion();
-  setFormMessage("");
-  renderDashboard();
-  if (pollTimer) clearTimeout(pollTimer);
-  poll();
 });
 
-$("monitor-list").addEventListener("click", (event) => {
+$("monitor-list").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-remove-source]");
   if (!button) return;
-  sources = sources.filter((source) => source.id !== button.dataset.removeSource);
-  saveSources();
-  updatePrefixSuggestion();
-  renderDashboard();
-  setFormMessage("");
-  if (pollTimer) clearTimeout(pollTimer);
-  poll();
+  const source = sources.find((item) => item.id === button.dataset.removeSource);
+  if (!source) return;
+  button.disabled = true;
+  try {
+    if (source.serverId) {
+      const response = await fetch(`/api/v1/monitors/${source.serverId}`, {method: "DELETE"});
+      if (response.status === 401) { await handleUnauthorized(); return; }
+      if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+    }
+    sources = sources.filter((item) => item !== source);
+    saveSources();
+    renderDashboard();
+    setFormMessage("");
+    if (pollTimer) clearTimeout(pollTimer);
+    poll();
+  } catch (error) {
+    setFormMessage(error.message || "Could not remove monitor.", true);
+    button.disabled = false;
+  }
 });
 
 const dashboardRoot = $("dashboard-sections");
@@ -726,6 +831,4 @@ $("capture-button").addEventListener("click", async (event) => {
   }
 });
 
-renderDashboard();
-renderMonitorList();
 poll();

@@ -5,99 +5,175 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ARCH=$(uname -m)
 TRIPLE="$ARCH-linux"
 CHECK_ONLY=0
+BACKEND=auto
+NVML_INCLUDE_DIR=${NVML_INCLUDE_DIR:-}
+VULKAN_INCLUDE_DIR=${VULKAN_INCLUDE_DIR:-}
+VULKAN_LIBRARY_DIR=${VULKAN_LIBRARY_DIR:-}
 
 usage() {
     cat <<'EOF'
-Usage: ./build-ctop.sh [--check] [-h|--help]
+Usage: ./build-ctop.sh [--backend auto|nvidia|vulkan|both] [--check] [-h|--help]
 
 Builds ctop with the web dashboard assets embedded.
 
-  --check, --check-deps   verify build dependencies and exit
-  -h, --help              show this help
+  --backend NAME   choose GPU backend; auto selects all available backends
+  --check          verify compiler and selected backend dependencies, then exit
+  -h, --help       show this help
 
 Environment:
-  CUDA_ROOT   CUDA installation containing nvml.h and the NVML stub library.
-              When unset, common locations are searched automatically.
+  CUDA_ROOT          CUDA installation to search for nvml.h
+  NVML_INCLUDE_DIR   directory containing nvml.h
+  VULKAN_INCLUDE_DIR  directory containing vulkan/vulkan.h
+  VULKAN_LIBRARY_DIR directory containing libvulkan.so (optional)
 EOF
 }
 
 while [ $# -gt 0 ]; do
     case $1 in
         --check|--check-deps) CHECK_ONLY=1 ;;
+        --backend)
+            [ $# -ge 2 ] || { echo "--backend requires a value" >&2; usage >&2; exit 2; }
+            BACKEND=$2
+            shift
+            ;;
+        --backend=*) BACKEND=${1#*=} ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
     shift
 done
 
-stop_without_compiler() {
-    printf 'gcc was not found, so the build cannot continue.\n' >&2
+case $BACKEND in
+    auto|nvidia|vulkan|both) ;;
+    *) printf 'unknown backend: %s\n\n' "$BACKEND" >&2; usage >&2; exit 2 ;;
+esac
+
+if ! command -v gcc >/dev/null 2>&1; then
+    echo "gcc was not found, so the build cannot continue." >&2
     exit 1
+fi
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/ctop-build.XXXXXX")
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+try_nvml_include() {
+    [ -f "$1/nvml.h" ] || return 1
+    NVML_INCLUDE_DIR=$1
+    return 0
 }
 
-# Resolve the directory holding nvml.h and the directory holding the NVML stub
-# library. Both must exist: the driver provides the runtime library only.
 try_nvml_base() {
+    [ -f "$1/nvml.h" ] && { NVML_INCLUDE_DIR=$1; return 0; }
     for include in "$1/targets/$TRIPLE/include" "$1/include"; do
-        [ -f "$include/nvml.h" ] || continue
-        for stubs in "$1/targets/$TRIPLE/lib/stubs" "$1/lib64/stubs" "$1/lib/stubs"; do
-            if [ -f "$stubs/libnvidia-ml.so" ] || [ -f "$stubs/libnvidia-ml.a" ]; then
-                NVML_INCLUDE_DIR=$include
-                NVML_STUB_DIR=$stubs
-                return 0
-            fi
-        done
+        try_nvml_include "$include" && return 0
     done
     return 1
 }
 
-find_nvml_development() {
+find_nvml_header() {
+    if [ -n "$NVML_INCLUDE_DIR" ] && try_nvml_include "$NVML_INCLUDE_DIR"; then
+        return 0
+    fi
     if [ -n "${CUDA_ROOT:-}" ] && try_nvml_base "$CUDA_ROOT"; then
         return 0
     fi
-
-    for base in $(for path in /usr/local/cuda-* /usr/local/cuda /opt/cuda-* /opt/cuda; do
-        [ -d "$path" ] && printf '%s\n' "$path"
-    done | sort -rV); do
+    for base in /usr/local/cuda-* /usr/local/cuda /opt/cuda-* /opt/cuda; do
+        [ -d "$base" ] || continue
         try_nvml_base "$base" && return 0
     done
-
     for include in /usr/include /usr/local/include; do
-        [ -f "$include/nvml.h" ] || continue
-        for stubs in /usr/lib/$TRIPLE/stubs /usr/lib64/stubs /usr/local/lib/stubs; do
-            if [ -f "$stubs/libnvidia-ml.so" ] || [ -f "$stubs/libnvidia-ml.a" ]; then
-                NVML_INCLUDE_DIR=$include
-                NVML_STUB_DIR=$stubs
-                return 0
-            fi
-        done
+        try_nvml_include "$include" && return 0
     done
     return 1
 }
 
-stop_without_nvml() {
-    printf 'nvml.h or the NVML stub library was not found under:\n'
-    printf '  CUDA_ROOT (if set), /usr/local/cuda*, /opt/cuda*, /usr\n\n'
-    printf 'ctop links against the NVML stub at build time; the NVIDIA driver only supplies\n'
-    printf 'the runtime library. Stopping here. If the NVML development files live elsewhere:\n\n'
-    printf '  CUDA_ROOT=/path/to/cuda ./build-ctop.sh\n'
+try_vulkan_include() {
+    [ -f "$1/vulkan/vulkan.h" ] || return 1
+    VULKAN_INCLUDE_DIR=$1
+    return 0
 }
 
-if ! command -v gcc >/dev/null 2>&1; then
-    stop_without_compiler
+find_vulkan_header() {
+    if [ -n "$VULKAN_INCLUDE_DIR" ] && try_vulkan_include "$VULKAN_INCLUDE_DIR"; then
+        return 0
+    fi
+    for include in /usr/include /usr/local/include /opt/vulkan/include; do
+        try_vulkan_include "$include" && return 0
+    done
+    return 1
+}
+
+if find_nvml_header; then NVML_FOUND=1; else NVML_FOUND=0; fi
+if find_vulkan_header; then
+    if [ -n "$VULKAN_LIBRARY_DIR" ]; then
+        if printf 'int main(void) { return 0; }\n' | \
+            gcc -x c - -o "$TMP/vulkan-link-check" -L"$VULKAN_LIBRARY_DIR" -lvulkan >/dev/null 2>&1; then
+            VULKAN_FOUND=1
+        else
+            VULKAN_FOUND=0
+        fi
+    elif printf 'int main(void) { return 0; }\n' | \
+        gcc -x c - -o "$TMP/vulkan-link-check" -lvulkan >/dev/null 2>&1; then
+        VULKAN_FOUND=1
+    else
+        VULKAN_FOUND=0
+    fi
+else
+    VULKAN_FOUND=0
 fi
 
-if ! find_nvml_development; then
-    stop_without_nvml >&2
-    exit 1
-fi
+case $BACKEND in
+    auto)
+        if [ "$NVML_FOUND" -eq 1 ] && [ "$VULKAN_FOUND" -eq 1 ]; then
+            SELECTED_BACKEND=both
+        elif [ "$NVML_FOUND" -eq 1 ]; then
+            SELECTED_BACKEND=nvidia
+        elif [ "$VULKAN_FOUND" -eq 1 ]; then
+            SELECTED_BACKEND=vulkan
+        else
+            echo "No GPU backend development files found (need nvml.h or Vulkan headers and loader)." >&2
+            exit 1
+        fi
+        ;;
+    nvidia)
+        if [ "$NVML_FOUND" -ne 1 ]; then
+            echo "nvml.h was not found. Set NVML_INCLUDE_DIR or CUDA_ROOT." >&2
+            exit 1
+        fi
+        SELECTED_BACKEND=nvidia
+        ;;
+    vulkan)
+        if [ "$VULKAN_FOUND" -ne 1 ]; then
+            echo "Vulkan headers or the Vulkan loader development library were not found." >&2
+            echo "Install Vulkan development files or set VULKAN_INCLUDE_DIR." >&2
+            exit 1
+        fi
+        SELECTED_BACKEND=vulkan
+        ;;
+    both)
+        if [ "$NVML_FOUND" -ne 1 ] || [ "$VULKAN_FOUND" -ne 1 ]; then
+            echo "The both backend requires nvml.h, Vulkan headers, and the Vulkan loader development library." >&2
+            echo "Set NVML_INCLUDE_DIR/CUDA_ROOT, VULKAN_INCLUDE_DIR, and VULKAN_LIBRARY_DIR as needed." >&2
+            exit 1
+        fi
+        SELECTED_BACKEND=both
+        ;;
+esac
 
 if [ "$CHECK_ONLY" = 1 ]; then
-    printf 'compiler:   %s\n' "$(gcc -dumpversion)"
-    printf 'arch:       %s\n' "$ARCH"
-    printf 'nvml.h:     %s\n' "$NVML_INCLUDE_DIR/nvml.h"
-    printf 'NVML stub:  %s\n' "$NVML_STUB_DIR"
-    printf 'all build dependencies are present\n'
+    printf 'compiler:       %s\n' "$(gcc -dumpversion)"
+    printf 'arch:           %s\n' "$ARCH"
+    printf 'GPU backend:    %s\n' "$SELECTED_BACKEND"
+    case $SELECTED_BACKEND in
+        nvidia|both) printf 'NVML header:    %s/nvml.h\n' "$NVML_INCLUDE_DIR" ;;
+    esac
+    case $SELECTED_BACKEND in
+        vulkan|both)
+            printf 'Vulkan header:  %s/vulkan/vulkan.h\n' "$VULKAN_INCLUDE_DIR"
+            printf 'Vulkan loader:  available (-lvulkan)\n'
+            ;;
+    esac
+    echo "all selected backend dependencies are present"
     exit 0
 fi
 
@@ -107,9 +183,6 @@ for asset in index.html style.css app.js html2canvas.min.js favicon.svg; do
         exit 1
     fi
 done
-
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/ctop-build.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 emit_asset() {
     symbol=$1
@@ -135,9 +208,25 @@ emit_asset() {
     printf '#endif\n'
 } > "$TMP/web_assets.h"
 
-printf 'using nvml.h from %s\n' "$NVML_INCLUDE_DIR"
-gcc -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter \
-    -I"$NVML_INCLUDE_DIR" -I"$TMP" "$ROOT/ctop.c" \
-    -L"$NVML_STUB_DIR" -Wl,-rpath,/lib/$TRIPLE \
-    -lnvidia-ml -ldl -lm -o "$ROOT/ctop"
+set -- -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -I"$TMP"
+case $SELECTED_BACKEND in
+    nvidia|both) set -- "$@" -DCTOP_ENABLE_NVML=1 -I"$NVML_INCLUDE_DIR" ;;
+esac
+case $SELECTED_BACKEND in
+    vulkan|both) set -- "$@" -DCTOP_ENABLE_VULKAN=1 -I"$VULKAN_INCLUDE_DIR" ;;
+esac
+
+printf 'building GPU backend: %s\n' "$SELECTED_BACKEND"
+case $SELECTED_BACKEND in
+    vulkan|both)
+        if [ -n "$VULKAN_LIBRARY_DIR" ]; then
+            gcc "$@" "$ROOT/ctop.c" -ldl -lm -L"$VULKAN_LIBRARY_DIR" -lvulkan -o "$ROOT/ctop"
+        else
+            gcc "$@" "$ROOT/ctop.c" -ldl -lm -lvulkan -o "$ROOT/ctop"
+        fi
+        ;;
+    nvidia)
+        gcc "$@" "$ROOT/ctop.c" -ldl -lm -o "$ROOT/ctop"
+        ;;
+esac
 printf 'built %s\n' "$ROOT/ctop"

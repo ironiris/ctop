@@ -26,8 +26,8 @@
   <main>
     <div id="dashboard-sections">
       <section class="section" data-dashboard-section="gpu-list" aria-labelledby="gpu-heading">
-        <div class="section-heading"><div class="gpu-list-title"><div class="section-order-controls" role="group" aria-label="Reorder GPU LIST"><button type="button" data-order-section="gpu-list" data-order-direction="-1" aria-label="Move GPU LIST up" title="Move up" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4 13 12H3z"/></svg></button><button type="button" data-order-section="gpu-list" data-order-direction="1" aria-label="Move GPU LIST down" title="Move down"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10L8 12z"/></svg></button></div><h2 id="gpu-heading">GPU LIST</h2><label id="local-prefix-control" class="prefix-control" hidden>Prefix<input id="local-prefix" value="A" maxlength="3" aria-label="Local GPU prefix"></label></div><span id="gpu-count" class="section-meta">— devices</span></div>
-        <div class="table-card gpu-status-card"><div class="table-scroll"><table class="gpu-table"><thead><tr><th>GPU</th><th>NAME</th><th>TEMP</th><th>POWER DRAW/LIMIT</th><th>VRAM USED/TOTAL</th><th class="num">GPU LOAD</th><th class="gpu-meter-column"><div class="gpu-meter-heading"><span>100%</span><span>VRAM ← │ → GPU</span><span>100%</span></div></th></tr></thead><tbody id="gpu-rows"><tr><td colspan="7" class="empty-row">Waiting for GPU metrics…</td></tr></tbody></table></div></div>
+        <div class="section-heading"><div class="gpu-list-title"><div class="section-order-controls" role="group" aria-label="Reorder GPU LIST"><button type="button" data-order-section="gpu-list" data-order-direction="-1" aria-label="Move GPU LIST up" title="Move up" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4 13 12H3z"/></svg></button><button type="button" data-order-section="gpu-list" data-order-direction="1" aria-label="Move GPU LIST down" title="Move down"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10L8 12z"/></svg></button></div><h2 id="gpu-heading">GPU LIST</h2></div><span id="gpu-count" class="section-meta">— devices</span></div>
+        <div class="table-card gpu-status-card"><div class="table-scroll"><table class="gpu-table"><thead><tr><th>GPU</th><th>NAME</th><th>TEMP</th><th>POWER DRAW/LIMIT</th><th>GPU MEM USED/TOTAL</th><th class="num">GPU LOAD</th><th class="gpu-meter-column"><div class="gpu-meter-heading"><span>100%</span><span>GPU MEM ← │ → GPU</span><span>100%</span></div></th></tr></thead><tbody id="gpu-rows"><tr><td colspan="7" class="empty-row">Waiting for GPU metrics…</td></tr></tbody></table></div></div>
       </section>
     </div>
     <section class="section" aria-labelledby="monitor-heading">
@@ -35,9 +35,9 @@
       <form id="monitor-form" class="monitor-form">
         <label class="monitor-url-field">Metrics address<input id="monitor-url" type="text" inputmode="url" required placeholder="192.168.0.177:8079"></label>
         <label class="monitor-token-field">Token<input id="monitor-token" type="password" autocomplete="new-password" placeholder="Optional"></label>
-        <label class="prefix-control">GPU prefix<input id="monitor-prefix" value="B" maxlength="3" aria-label="New monitor GPU prefix"></label>
         <button class="monitor-add-button" type="submit">Add monitor</button>
       </form>
+      <p class="form-hint">Monitor settings are managed by ctop and shared with its TUI when enabled. Use <code>--token</code> or open from loopback to change them; GPU prefixes are automatic.</p>
       <p id="monitor-form-message" class="monitor-form-message" hidden></p>
       <ul id="monitor-list" class="monitor-list"></ul>
     </section>

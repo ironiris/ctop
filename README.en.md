@@ -1,8 +1,8 @@
 # ctop
 
-A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network, and disk I/O monitoring.
+A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, network, and disk I/O.
 
-`ctop` is a single C11 program with no curses dependency. It reads GPU data through NVML, system data from Linux `/proc` interfaces, and link speeds from `/sys`.
+`ctop` is a single C11 program with no curses dependency. NVIDIA data comes from NVML; AMD devices are enumerated with Vulkan and monitored through Linux `amdgpu` interfaces.
 
 ![ctop terminal UI](docs/images/ctop.png)
 
@@ -10,11 +10,11 @@ A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network
 
 ## Features
 
-- GPU temperature, power, VRAM, and utilization
+- GPU temperature, power, memory, and utilization
 - GPU process table with `GPU-LOAD`, `CPU-AVG`, and `MEM` percentage columns
 - RAM and SWAP usage with history graphs
 - Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
-- VRAM and GPU utilization history graphs
+- GPU memory and utilization history graphs
 - Network throughput in bit/s with per-interface link-speed utilization
 - RX/TX indicators and per-interface network rows
 - Docker-related interfaces (`docker*`, `br-*`, and `veth*`) excluded from host network totals
@@ -25,19 +25,24 @@ A lightweight terminal dashboard for NVIDIA GPU, system memory, process, network
 
 ### Build time
 
-- Linux
-- GCC with C11 support
-- CUDA/NVML development files:
-  - `nvml.h`
-  - the NVML stub library, normally `libnvidia-ml.so` under CUDA's `targets/x86_64-linux/lib/stubs`
+- Linux and GCC with C11 support
+- NVIDIA backend: `nvml.h` (the NVML stub library and full CUDA Toolkit are not required)
+- Vulkan backend: Vulkan headers and the loader development library
 - Standard glibc, `libdl`, and `libm` libraries
 
-The build script looks for the NVML development files under `CUDA_ROOT` (when set), then `/usr/local/cuda*`, `/opt/cuda*`, and `/usr`. If none are found it stops and tells you to set `CUDA_ROOT`. To check dependencies without compiling, run `./build-ctop.sh --check`.
+The default `auto` build selects NVIDIA, Vulkan, or both backends based on the installed development files. Select one explicitly with `--backend nvidia|vulkan|both`. Set `NVML_INCLUDE_DIR`/`CUDA_ROOT` or `VULKAN_INCLUDE_DIR` to specify header locations; `VULKAN_LIBRARY_DIR` can specify the Vulkan loader library directory.
+
+Check dependencies without compiling:
+
+```bash
+./build-ctop.sh --check
+./build-ctop.sh --check --backend both
+```
 
 ### Runtime
 
-- A supported NVIDIA GPU
-- NVIDIA driver with NVML available (`nvidia-smi` should work)
+- NVIDIA monitoring requires an NVIDIA driver that provides NVML (`nvidia-smi` should work).
+- AMD monitoring requires the Vulkan loader, the `amdgpu` kernel driver, and accessible DRM/sysfs data.
 - An interactive Linux terminal at least 76 columns by 13 rows for TUI mode
 - No terminal is needed when running web-only with `--no-tui`
 
@@ -52,13 +57,17 @@ sudo apt update
 sudo apt install build-essential
 ```
 
-Install the NVIDIA driver appropriate for your GPU and verify it:
+Install the appropriate AMD or NVIDIA kernel driver. Verify an NVIDIA installation with:
 
 ```bash
 nvidia-smi
 ```
 
-Install the CUDA Toolkit from the official NVIDIA CUDA installation guide. The toolkit must provide `nvml.h` and the NVML stub library. The build script detects installations under `/usr/local/cuda*` and `/opt/cuda*`; for any other location, pass its path through `CUDA_ROOT`.
+The AMD backend needs Vulkan development files (Ubuntu/Debian: `libvulkan-dev`). The NVIDIA backend needs `nvml.h` from an NVML development package; the NVML stub library is not needed. Find the header with:
+
+```bash
+find /usr/local -name nvml.h 2>/dev/null
+```
 
 ## Build
 
@@ -68,11 +77,16 @@ From the project directory:
 ./build-ctop.sh
 ```
 
-Or with a custom CUDA installation:
+Backends are selected automatically, or can be chosen explicitly:
 
 ```bash
-CUDA_ROOT=/usr/local/cuda ./build-ctop.sh
+./build-ctop.sh --backend auto
+./build-ctop.sh --backend nvidia
+./build-ctop.sh --backend vulkan
+./build-ctop.sh --backend both
 ```
+
+If the NVML header is outside standard paths, set `NVML_INCLUDE_DIR=/path/to/include` or `CUDA_ROOT=/path/to/cuda`.
 
 This creates the `ctop` executable in the project directory. The web dashboard's HTML, CSS, and JavaScript resources are embedded into the executable during this build.
 
@@ -95,6 +109,7 @@ Useful options:
 ```text
 -i, --interval N          refresh interval in seconds
 -p, --port PORT           serve the web dashboard alongside the TUI
+--monitor ADDRESS         add a remote HTTP monitor shared by TUI and web (repeatable)
 --no-tui                  run only the web dashboard (requires -p)
 --localhost               restrict web access to 127.0.0.1 (requires -p)
 -t, --token TOKEN         require an access token for the dashboard and API
@@ -115,6 +130,7 @@ Useful options:
 ./ctop -p 8079
 ./ctop -p 8079 --localhost
 ./ctop -p 8079 --token "$(openssl rand -hex 16)" --localhost
+./ctop --monitor 192.168.0.177:8079
 ./ctop --no-tui --port 8079
 ```
 
@@ -122,7 +138,7 @@ Useful options:
 
 Use `-p 8079` to run the web dashboard alongside the existing terminal UI. Open `http://<server-address>:8079/` in a browser. When running with the TUI, the detected web monitor address (for example, `http://192.168.0.177:8079`) appears in the TUI's upper-right corner. With `--localhost`, it displays `http://127.0.0.1:8079`. Add `--no-tui` to run the web dashboard without the terminal UI. Use the camera icon in the dashboard header to copy a screenshot to the clipboard. If clipboard copying is unavailable, the image is saved as a file.
 
-Add another ctop server address under `ADDITIONAL MONITORS` at the bottom of the dashboard to combine GPUs in GPU LIST and show separate GPU, SYSTEM, and GPU PROCESSES sections per monitor. Enter only a host and port (for example, `192.168.0.177:8079`) or a protocol-relative address (`//192.168.0.177:8079`). The dashboard's current protocol (`http` or `https`) is used, and `/api/v1/metrics` is appended automatically. With one monitor, prefixes and the prefix field are hidden. With multiple monitors, the current server defaults to prefix `A` (editable next to GPU LIST); new monitors get the next unused prefix (`B`, `C`, and so on), producing IDs such as `A0` and `B0`. Each monitor's `GPU(A)`, `SYSTEM(A)`, and `GPU PROCESSES(A)` sections can be moved independently with the triangle buttons to the left of their titles. GPU, SYSTEM, and GPU PROCESSES sections each have a collapse button on the right. GPU LIST can be moved the same way; the order is saved in the browser. Addresses, prefixes, and tokens entered in the adjacent `Token` field are saved in browser localStorage. Remote addresses must be reachable from the browser, and remote servers must allow cross-origin browser requests. Use the `Token` field for token-protected remote APIs; the `?token=...` URL form is also supported.
+Add another ctop address under `ADDITIONAL MONITORS` to register the same monitor in both the TUI and web dashboard. Monitors added from the TUI also appear in the web dashboard. A duplicate is identified only when host/address, port, and token all match; a different token is treated as a separate monitor. Prefixes (`A`, `B`, and so on) are assigned automatically. If a remote connection drops and is detected again, the web page reloads to update its connection state. TUI remote monitor metrics are included in the web API. Without `--token`, other network users can see them too, so set `--token` when exposing the server to a network. Adding or removing monitors in the web UI requires an authenticated session or a loopback connection. Remote addresses must be reachable from the ctop server. TUI remote connections use HTTP only; do not send tokens over untrusted networks. Section order and collapse state are configured separately in the web browser and TUI.
 
 Current metrics and graph history are also available as JSON:
 
@@ -139,21 +155,28 @@ curl "http://localhost:8079/api/v1/metrics?token=TOKEN"
 
 The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. Without `--token`, the dashboard and API are open without authentication. The metrics API allows cross-origin browser requests for multi-monitoring, so use `--token` on instances exposed to a network.
 
-## Controls
+## TUI remote monitors and controls
+
+The remote monitor list is shared with the web dashboard; adding or removing a monitor in either UI updates the other. Enter the server address in the bottom `REMOTE` field and, if required, its token in the adjacent `TOKEN` field; then click `ADD` to connect. Entering an address alone does not connect or create a monitor section. Click either field or press `a` to focus the address. Tab/Enter moves focus through TOKEN and ADD; press Enter on the focused ADD button to connect. A URL such as `http://host:port` is also accepted; `/api/v1/metrics` is appended automatically. Remote GPUs are combined in GPU LIST, while GPU graphs, SYSTEM, and GPU PROCESSES appear in separate sections per monitor. You can also pass `--monitor ADDRESS` at startup (repeatable). TUI remote connections currently support HTTP only; tokens are sent unencrypted, so do not use them over untrusted networks.
 
 ```text
 q / Esc                   quit
 h                         show/hide help
-g                         collapse/expand GPU history
-m                         collapse/expand the system section
+a                         focus the bottom REMOTE address field
+Tab / Enter               move focus through TOKEN and ADD
+[ / ]                     select a section
+u / d                     move the selected section up/down
+x                         remove the selected remote monitor
+c                         collapse/expand the selected section
+g / m                     collapse/expand local GPU / SYSTEM sections
 Space                     pause/resume sampling
 + / -                     change refresh interval
 r                         clear graph history
 j                         select the next GPU process
-k / K                     send SIGTERM confirmation to the selected process
+k / K                     confirm SIGTERM for a selected local process
 ```
 
-The top-bar actions can also be clicked when the terminal supports SGR mouse input.
+Section order lasts for the current TUI session. When the terminal supports SGR mouse input, click `▲`/`▼` before a title to move that section up or down, and the right triangle to collapse or expand it.
 
 ## Disk display
 
