@@ -607,12 +607,6 @@ async function poll() {
   }
 }
 
-$("monitor-url").addEventListener("blur", () => {
-  const field = $("monitor-url");
-  if (!field.value.trim()) return;
-  try { field.value = normalizeMetricsUrl(field.value); } catch (_) {}
-});
-
 $("monitor-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   let url;

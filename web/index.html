@@ -32,8 +32,8 @@
     </div>
     <section class="section" aria-labelledby="monitor-heading">
       <div class="section-heading"><h2 id="monitor-heading">ADDITIONAL MONITORS</h2></div>
-      <form id="monitor-form" class="monitor-form">
-        <label class="monitor-url-field">Metrics address<input id="monitor-url" type="text" inputmode="url" required placeholder="192.168.0.177:8079"></label>
+      <form id="monitor-form" class="monitor-form" autocomplete="off">
+        <label class="monitor-url-field">Metrics address<input id="monitor-url" name="ctop-monitor-address" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" required placeholder="192.168.0.177:8079"></label>
         <label class="monitor-token-field">Token<input id="monitor-token" type="password" autocomplete="new-password" placeholder="Optional"></label>
         <button class="monitor-add-button" type="submit">Add monitor</button>
       </form>
