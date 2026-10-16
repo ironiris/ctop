@@ -37,7 +37,7 @@
         <label class="monitor-token-field">Token<input id="monitor-token" type="password" autocomplete="new-password" placeholder="Optional"></label>
         <button class="monitor-add-button" type="submit">Add monitor</button>
       </form>
-      <p class="form-hint">Monitor settings are managed by ctop and shared with its TUI when enabled. Use <code>--token</code> or open from loopback to change them; GPU prefixes are automatic.</p>
+      <p class="form-hint">Monitor settings are managed by ctop and shared with its TUI when enabled. The Token field authenticates the remote ctop; a dashboard <code>--token</code>, if configured, is separate. GPU prefixes are automatic.</p>
       <p id="monitor-form-message" class="monitor-form-message" hidden></p>
       <ul id="monitor-list" class="monitor-list"></ul>
     </section>

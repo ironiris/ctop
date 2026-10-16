@@ -83,7 +83,6 @@ static bool color_enabled = true;
 static int active_web_port = 0;
 static char active_web_url[64] = "";
 static const char *web_token = NULL;
-static bool web_local_only = false;
 static double sample_interval_seconds = 1.0;
 static FILE *debug_log_file = NULL;
 static const char *BLOCK_GLYPHS[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
@@ -4913,8 +4912,7 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
                              const NetworkInfo *network, const History *ram,
                              const History *swap, const History *disk_history,
                              const History *network_history, const History *vram,
-                             const History *gpu_history, UiState *ui,
-                             bool client_loopback) {
+                             const History *gpu_history, UiState *ui) {
     struct timeval timeout = {.tv_sec = 0, .tv_usec = 250000};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
@@ -5006,12 +5004,6 @@ static void web_serve_client(int fd, const GpuInfo *gpus, int gpu_count,
     }
 
     if (add_monitor_request || remove_monitor_request) {
-        if (!web_token && !web_local_only && !client_loopback) {
-            static const char body[] = "Shared monitor changes require --token or --localhost.\n";
-            web_send_response(fd, 403, "Forbidden", "text/plain; charset=utf-8",
-                              body, sizeof(body) - 1);
-            return;
-        }
         if (add_monitor_request) {
             char content_length_text[32];
             if (!web_header_value(request, "Content-Length", content_length_text,
@@ -5160,20 +5152,6 @@ static int web_server_open(int port, bool local_only) {
     return fd;
 }
 
-static bool web_peer_is_loopback(const struct sockaddr_storage *peer) {
-    if (!peer) return false;
-    if (peer->ss_family == AF_INET) {
-        const struct sockaddr_in *address = (const struct sockaddr_in *)peer;
-        return (ntohl(address->sin_addr.s_addr) >> 24) == 127;
-    }
-    if (peer->ss_family == AF_INET6) {
-        const struct sockaddr_in6 *address = (const struct sockaddr_in6 *)peer;
-        return IN6_IS_ADDR_LOOPBACK(&address->sin6_addr) ||
-               (IN6_IS_ADDR_V4MAPPED(&address->sin6_addr) && address->sin6_addr.s6_addr[12] == 127);
-    }
-    return false;
-}
-
 static void web_serve_pending(int listener, const GpuInfo *gpus, int gpu_count,
                               const SystemInfo *system, const DiskInfo *disk,
                               const NetworkInfo *network, const History *ram,
@@ -5181,17 +5159,14 @@ static void web_serve_pending(int listener, const GpuInfo *gpus, int gpu_count,
                               const History *network_history, const History *vram,
                               const History *gpu_history, UiState *ui) {
     for (int served = 0; served < 8; served++) {
-        struct sockaddr_storage peer = {0};
-        socklen_t peer_size = sizeof(peer);
-        int client = accept(listener, (struct sockaddr *)&peer, &peer_size);
+        int client = accept(listener, NULL, NULL);
         if (client < 0) {
             if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
                 debug_log("web accept failed: %s", strerror(errno));
             return;
         }
         web_serve_client(client, gpus, gpu_count, system, disk, network,
-                         ram, swap, disk_history, network_history, vram, gpu_history,
-                         ui, web_peer_is_loopback(&peer));
+                         ram, swap, disk_history, network_history, vram, gpu_history, ui);
         close(client);
     }
 }
@@ -5352,7 +5327,6 @@ int main(int argc, char **argv) {
     const char *environment_token = getenv("CTOP_TOKEN");
     web_token = token_argument ? token_argument
             : (environment_token && environment_token[0] ? environment_token : NULL);
-    web_local_only = local_only;
     if (web_token) {
         if (!web_port) {
             fprintf(stderr, "--token requires -p/--port\n");
