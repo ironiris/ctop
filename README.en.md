@@ -110,7 +110,7 @@ If a service uses a separate executable such as `~/ctop/ctop`, specify its direc
 curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --bindir "$HOME/ctop"
 ```
 
-The installer does not install OS packages. It requires `curl`, `tar`, `awk`, `gcc`, and the development files for the selected GPU backend; the build step reports missing dependencies. Restart any running ctop process after installation to use the updated executable. If a service launches a separate binary from a checkout, update that path as well.
+If missing, the installer uses the detected OS package manager to install the base tools `curl`, `gcc`, `tar`, and `awk`. rpm-ostree systems such as Bazzite need a reboot after creating a new deployment. GPU SDKs and development headers are not installed automatically; the build step reports missing backend dependencies. Restart any running ctop process after installation. If a service launches a separate binary from a checkout, pass its directory with `--bindir`.
 
 ## Run
 

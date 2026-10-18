@@ -69,9 +69,59 @@ if [ -z "$PREFIX" ]; then
     if [ -x /usr/bin/ctop ]; then PREFIX=/usr; else PREFIX=/usr/local; fi
 fi
 
-command -v curl >/dev/null 2>&1 || { echo "curl is required to download ctop." >&2; exit 1; }
-command -v tar >/dev/null 2>&1 || { echo "tar is required to unpack ctop source." >&2; exit 1; }
-command -v awk >/dev/null 2>&1 || { echo "awk is required to read release metadata." >&2; exit 1; }
+run_privileged() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        echo "Root permission is required to install base build tools." >&2
+        return 1
+    fi
+}
+
+ensure_base_tools() {
+    missing=
+    for tool in curl gcc tar awk; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            if [ -n "$missing" ]; then missing="$missing, "; fi
+            missing="$missing$tool"
+        fi
+    done
+    [ -n "$missing" ] || return 0
+    echo "Installing missing base build tools: $missing"
+
+    if command -v rpm-ostree >/dev/null 2>&1; then
+        run_privileged rpm-ostree install --idempotent curl gcc tar gawk
+        echo "A new OS deployment was created. Reboot, then rerun this installer." >&2
+        exit 1
+    elif command -v apt-get >/dev/null 2>&1; then
+        run_privileged apt-get update
+        run_privileged apt-get install -y curl gcc tar gawk
+    elif command -v dnf >/dev/null 2>&1; then
+        run_privileged dnf install -y curl gcc tar gawk
+    elif command -v yum >/dev/null 2>&1; then
+        run_privileged yum install -y curl gcc tar gawk
+    elif command -v pacman >/dev/null 2>&1; then
+        run_privileged pacman -Sy --needed --noconfirm curl gcc tar gawk
+    elif command -v zypper >/dev/null 2>&1; then
+        run_privileged zypper --non-interactive install curl gcc tar gawk
+    elif command -v apk >/dev/null 2>&1; then
+        run_privileged apk add --no-cache curl gcc tar gawk
+    else
+        printf 'Missing tools: %s. Install them with your OS package manager, then rerun.\n' "$missing" >&2
+        exit 1
+    fi
+
+    for tool in curl gcc tar awk; do
+        command -v "$tool" >/dev/null 2>&1 || {
+            printf 'Package installation did not provide required command: %s\n' "$tool" >&2
+            exit 1
+        }
+    done
+}
+
+ensure_base_tools
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/ctop-install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
