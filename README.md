@@ -116,6 +116,12 @@ curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh 
 curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --prefix /usr
 ```
 
+서비스가 `~/ctop/ctop`처럼 별도 실행 파일을 사용한다면 해당 디렉터리를 지정합니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --bindir "$HOME/ctop"
+```
+
 설치 스크립트는 OS 개발 패키지를 자동 설치하지 않습니다. `curl`, `tar`, `awk`, `gcc`와 선택된 GPU 백엔드의 개발 파일이 필요하며, 누락된 의존성은 빌드 단계에서 안내합니다. 실행 중인 ctop 프로세스는 설치 후 재시작해야 업데이트됩니다. 서비스가 저장소 안의 별도 실행 파일을 직접 가리키는 경우에는 그 경로도 갱신해야 합니다.
 
 ## 실행

@@ -5,23 +5,28 @@ REPOSITORY=https://github.com/ironiris/ctop
 PREFIX=${PREFIX:-}
 PREFIX_EXPLICIT=0
 [ -n "$PREFIX" ] && PREFIX_EXPLICIT=1
+BINDIR=${CTOP_BINDIR:-}
+BINDIR_EXPLICIT=0
+[ -n "$BINDIR" ] && BINDIR_EXPLICIT=1
 BACKEND=${CTOP_BACKEND:-auto}
 DESTDIR=${DESTDIR:-}
 
 usage() {
     cat <<'EOF'
-Usage: install-ctop.sh [--prefix DIR] [--backend auto|nvidia|vulkan|both]
+Usage: install-ctop.sh [--prefix DIR|--bindir DIR] [--backend auto|nvidia|vulkan|both]
 
 Always checks GitHub for the latest ctop release, downloads its source,
 builds it, and updates the installed executable.
 
 Options:
-  --prefix DIR       install under DIR (default: existing /usr/bin/ctop, else /usr/local/bin)
+  --prefix DIR       install as DIR/bin/ctop (default: existing /usr/bin/ctop, else /usr/local/bin)
+  --bindir DIR       install as DIR/ctop (for a custom service executable path)
   --backend NAME     choose GPU backend (default: auto)
   -h, --help         show this help
 
 Environment:
   PREFIX             same as --prefix
+  CTOP_BINDIR        same as --bindir
   CTOP_BACKEND       same as --backend
   DESTDIR            staging root for packaging
 EOF
@@ -36,6 +41,13 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --prefix=*) PREFIX=${1#*=}; PREFIX_EXPLICIT=1 ;;
+        --bindir)
+            [ $# -ge 2 ] || { echo "--bindir requires a directory" >&2; exit 2; }
+            BINDIR=$2
+            BINDIR_EXPLICIT=1
+            shift
+            ;;
+        --bindir=*) BINDIR=${1#*=}; BINDIR_EXPLICIT=1 ;;
         --backend)
             [ $# -ge 2 ] || { echo "--backend requires a name" >&2; exit 2; }
             BACKEND=$2
@@ -82,7 +94,15 @@ ROOT=$(dirname -- "$BUILD_SCRIPT")
 
 "$ROOT/build-ctop.sh" --backend "$BACKEND"
 BINARY="$ROOT/ctop"
-TARGET="$DESTDIR$PREFIX/bin/ctop"
+if [ "$PREFIX_EXPLICIT" -eq 1 ] && [ "$BINDIR_EXPLICIT" -eq 1 ]; then
+    echo "Choose either --prefix or --bindir, not both." >&2
+    exit 2
+fi
+if [ -n "$BINDIR" ]; then
+    TARGET="$DESTDIR$BINDIR/ctop"
+else
+    TARGET="$DESTDIR$PREFIX/bin/ctop"
+fi
 
 install_binary() {
     staged="$TARGET.new.$$"
@@ -100,7 +120,7 @@ install_binary() {
 }
 
 if ! install_binary; then
-    if [ "$PREFIX_EXPLICIT" -eq 0 ] && [ "$PREFIX" = /usr ]; then
+    if [ "$BINDIR_EXPLICIT" -eq 0 ] && [ "$PREFIX_EXPLICIT" -eq 0 ] && [ "$PREFIX" = /usr ]; then
         echo "Cannot update /usr/bin; falling back to /usr/local/bin."
         PREFIX=/usr/local
         TARGET="$DESTDIR$PREFIX/bin/ctop"

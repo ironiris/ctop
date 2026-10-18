@@ -104,6 +104,12 @@ To install to `/usr/bin/ctop`, pass `--prefix /usr`:
 curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --prefix /usr
 ```
 
+If a service uses a separate executable such as `~/ctop/ctop`, specify its directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --bindir "$HOME/ctop"
+```
+
 The installer does not install OS packages. It requires `curl`, `tar`, `awk`, `gcc`, and the development files for the selected GPU backend; the build step reports missing dependencies. Restart any running ctop process after installation to use the updated executable. If a service launches a separate binary from a checkout, update that path as well.
 
 ## Run
