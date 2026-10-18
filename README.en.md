@@ -186,7 +186,7 @@ The disk information in the SYSTEM section uses this format:
 DISK(XX%) XXX.XGB/YYY.YGB R:<read rate> W:<write rate>
 ```
 
-`XXX.XGB` is the current used capacity and `YYY.YGB` is the total capacity. `R:` and `W:` display read and write throughput, respectively (for example, `W:271K`). The I/O graph shows combined read and write throughput for block devices, excluding partitions and `loop*`, `ram*`, and `zram*` devices. Its Y-axis is scaled to the maximum peak measured during the most recent 400 seconds rather than a 0–100% range. Capacity is normally measured for the root filesystem (`/`); when `/` is `composefs`, ctop uses the writable `/var` filesystem. Set `CTOP_DISK_PATH=/path` to select a different filesystem; if that path cannot be read, ctop falls back to `/`.
+`XXX.XGB` is the current used capacity and `YYY.YGB` is the total capacity. `R:` and `W:` display read and write throughput, respectively (for example, `W:271K`). The I/O graph shows combined read and write throughput for block devices, excluding partitions and `loop*`, `ram*`, and `zram*` devices. Its Y-axis is scaled to the maximum peak measured during the most recent 400 seconds rather than a 0–100% range. Capacity is normally measured for the root filesystem (`/`). If `/` is a virtual filesystem such as `composefs` or `overlay`, ctop selects the largest non-virtual filesystem visible in the current mount namespace (usually `/var` on Bazzite). Set `CTOP_DISK_PATH=/path` to select a filesystem explicitly. If no non-virtual filesystem is visible, capacity is reported as unavailable.
 
 ## Notes
 

@@ -1604,22 +1604,17 @@ static bool disk_device_is_partition(const char *name) {
     return true;
 }
 
-static const char *disk_capacity_path(void) {
-    const char *configured = getenv("CTOP_DISK_PATH");
-    if (configured && configured[0]) return configured;
-
-    FILE *mounts = setmntent("/proc/self/mounts", "r");
-    if (!mounts) return "/";
-    bool composefs_root = false;
-    struct mntent *entry;
-    while ((entry = getmntent(mounts))) {
-        if (strcmp(entry->mnt_dir, "/") == 0) {
-            composefs_root = strcmp(entry->mnt_type, "composefs") == 0;
-            break;
-        }
-    }
-    endmntent(mounts);
-    return composefs_root ? "/var" : "/";
+static bool disk_filesystem_is_virtual(const char *type) {
+    static const char *const virtual_types[] = {
+        "aufs", "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2",
+        "configfs", "composefs", "debugfs", "devpts", "devtmpfs", "efivarfs",
+        "fusectl", "hugetlbfs", "mqueue", "nsfs", "overlay", "proc", "pstore",
+        "ramfs", "rootfs", "rpc_pipefs", "securityfs", "selinuxfs", "squashfs",
+        "sysfs", "tmpfs", "tracefs",
+    };
+    for (size_t i = 0; i < ARRAY_LEN(virtual_types); i++)
+        if (strcmp(type, virtual_types[i]) == 0) return true;
+    return false;
 }
 
 static bool read_disk_capacity(DiskInfo *disk, const char *path) {
@@ -1634,12 +1629,53 @@ static bool read_disk_capacity(DiskInfo *disk, const char *path) {
     return disk->capacity_valid;
 }
 
+static bool read_disk_capacity_from_mounts(DiskInfo *disk) {
+    FILE *mounts = setmntent("/proc/self/mounts", "r");
+    if (!mounts) return read_disk_capacity(disk, "/");
+
+    char root_type[64] = "";
+    struct mntent *entry;
+    while ((entry = getmntent(mounts))) {
+        if (strcmp(entry->mnt_dir, "/") == 0) {
+            snprintf(root_type, sizeof(root_type), "%s", entry->mnt_type);
+            break;
+        }
+    }
+    endmntent(mounts);
+    if (!root_type[0] || !disk_filesystem_is_virtual(root_type))
+        return read_disk_capacity(disk, "/");
+
+    /* A virtual root (composefs/overlay/etc.) is not the backing storage.
+       Choose the largest real filesystem visible in this mount namespace. */
+    mounts = setmntent("/proc/self/mounts", "r");
+    if (!mounts) return false;
+    DiskInfo best = {0};
+    while ((entry = getmntent(mounts))) {
+        if (strcmp(entry->mnt_dir, "/") == 0 ||
+            disk_filesystem_is_virtual(entry->mnt_type)) continue;
+        DiskInfo candidate = {0};
+        if (read_disk_capacity(&candidate, entry->mnt_dir) &&
+            candidate.total_bytes > best.total_bytes) {
+            best = candidate;
+        }
+    }
+    endmntent(mounts);
+    if (!best.capacity_valid) return false;
+    disk->used_bytes = best.used_bytes;
+    disk->total_bytes = best.total_bytes;
+    disk->capacity_valid = true;
+    return true;
+}
+
 static bool read_disk_info(DiskInfo *disk) {
     memset(disk, 0, sizeof(*disk));
 
-    const char *capacity_path = disk_capacity_path();
-    if (!read_disk_capacity(disk, capacity_path) && strcmp(capacity_path, "/") != 0)
-        read_disk_capacity(disk, "/");
+    const char *configured = getenv("CTOP_DISK_PATH");
+    if (configured && configured[0] && read_disk_capacity(disk, configured)) {
+        /* Explicit path takes precedence over automatic mount discovery. */
+    } else {
+        read_disk_capacity_from_mounts(disk);
+    }
 
     FILE *file = fopen("/proc/diskstats", "r");
     if (!file) return disk->capacity_valid;
