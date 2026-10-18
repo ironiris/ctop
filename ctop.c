@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <mntent.h>
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
@@ -1603,18 +1604,42 @@ static bool disk_device_is_partition(const char *name) {
     return true;
 }
 
+static const char *disk_capacity_path(void) {
+    const char *configured = getenv("CTOP_DISK_PATH");
+    if (configured && configured[0]) return configured;
+
+    FILE *mounts = setmntent("/proc/self/mounts", "r");
+    if (!mounts) return "/";
+    bool composefs_root = false;
+    struct mntent *entry;
+    while ((entry = getmntent(mounts))) {
+        if (strcmp(entry->mnt_dir, "/") == 0) {
+            composefs_root = strcmp(entry->mnt_type, "composefs") == 0;
+            break;
+        }
+    }
+    endmntent(mounts);
+    return composefs_root ? "/var" : "/";
+}
+
+static bool read_disk_capacity(DiskInfo *disk, const char *path) {
+    struct statvfs filesystem;
+    if (statvfs(path, &filesystem) != 0 || filesystem.f_frsize == 0) return false;
+    unsigned long long block_size = (unsigned long long)filesystem.f_frsize;
+    unsigned long long total = (unsigned long long)filesystem.f_blocks * block_size;
+    unsigned long long free_bytes = (unsigned long long)filesystem.f_bfree * block_size;
+    disk->total_bytes = total;
+    disk->used_bytes = total > free_bytes ? total - free_bytes : 0;
+    disk->capacity_valid = total > 0;
+    return disk->capacity_valid;
+}
+
 static bool read_disk_info(DiskInfo *disk) {
     memset(disk, 0, sizeof(*disk));
 
-    struct statvfs filesystem;
-    if (statvfs("/", &filesystem) == 0 && filesystem.f_frsize > 0) {
-        unsigned long long block_size = (unsigned long long)filesystem.f_frsize;
-        unsigned long long total = (unsigned long long)filesystem.f_blocks * block_size;
-        unsigned long long free_bytes = (unsigned long long)filesystem.f_bfree * block_size;
-        disk->total_bytes = total;
-        disk->used_bytes = total > free_bytes ? total - free_bytes : 0;
-        disk->capacity_valid = total > 0;
-    }
+    const char *capacity_path = disk_capacity_path();
+    if (!read_disk_capacity(disk, capacity_path) && strcmp(capacity_path, "/") != 0)
+        read_disk_capacity(disk, "/");
 
     FILE *file = fopen("/proc/diskstats", "r");
     if (!file) return disk->capacity_valid;
