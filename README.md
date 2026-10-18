@@ -104,11 +104,19 @@ NVML 헤더가 기본 경로에 없다면 `NVML_INCLUDE_DIR=/path/to/include` �
 
 ## 설치
 
-컴파일한 실행 파일을 `/usr/local/bin/ctop`에 설치합니다.
+다음 명령은 매번 GitHub의 최신 릴리스를 확인하고, 소스를 다운로드해 빌드한 뒤 설치합니다. 기존 `/usr/bin/ctop`가 있으면 그 위치를 갱신하고, 없으면 `/usr/local/bin/ctop`에 설치합니다. 권한이 필요한 경우 sudo를 요청하며, `/usr`가 읽기 전용이면 `/usr/local/bin`으로 대체합니다.
 
 ```bash
-sudo ./install-ctop.sh
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh
 ```
+
+`/usr/bin/ctop`에 설치하려면 `--prefix /usr`를 지정합니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --prefix /usr
+```
+
+설치 스크립트는 OS 개발 패키지를 자동 설치하지 않습니다. `curl`, `tar`, `awk`, `gcc`와 선택된 GPU 백엔드의 개발 파일이 필요하며, 누락된 의존성은 빌드 단계에서 안내합니다. 실행 중인 ctop 프로세스는 설치 후 재시작해야 업데이트됩니다. 서비스가 저장소 안의 별도 실행 파일을 직접 가리키는 경우에는 그 경로도 갱신해야 합니다.
 
 ## 실행
 

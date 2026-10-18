@@ -92,11 +92,19 @@ This creates the `ctop` executable in the project directory. The web dashboard's
 
 ## Install
 
-Build and install the executable to `/usr/local/bin/ctop`:
+This command always checks the latest GitHub release, downloads its source, builds it, and installs the executable. It updates `/usr/bin/ctop` if present, otherwise installs to `/usr/local/bin/ctop`. It requests elevated permission if needed and falls back to `/usr/local/bin` if `/usr` is read-only.
 
 ```bash
-sudo ./install-ctop.sh
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh
 ```
+
+To install to `/usr/bin/ctop`, pass `--prefix /usr`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --prefix /usr
+```
+
+The installer does not install OS packages. It requires `curl`, `tar`, `awk`, `gcc`, and the development files for the selected GPU backend; the build step reports missing dependencies. Restart any running ctop process after installation to use the updated executable. If a service launches a separate binary from a checkout, update that path as well.
 
 ## Run
 
