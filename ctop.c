@@ -4665,6 +4665,8 @@ static char *web_metrics_json(const GpuInfo *gpus, int gpu_count,
         json_number(stream, interface->tx_bps, interface->valid);
         fputs(",\"capacity_bps\":", stream);
         json_number(stream, interface->capacity_bps, interface->capacity_valid);
+        fputs(",\"utilization_valid\":", stream);
+        fputs(interface->utilization_valid ? "true" : "false", stream);
         fputs(",\"utilization_percent\":", stream);
         json_number(stream, interface->utilization_percent, interface->utilization_valid);
         fputc('}', stream);
