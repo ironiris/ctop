@@ -1,13 +1,13 @@
 # Building ctop with both NVIDIA and AMD/Vulkan support
 
-Tested against `ironiris/ctop` main at base commit `393d3ff` (dual-backend changes in this working tree are uncommitted).
+Tested against `ironiris/ctop` main at base commit `393d3ff`; the dual-backend changes from that session are now committed on main.
 
 This guide records the dual-backend implementation and the exact build setup used on an AMD BC-250. The goal is **one ctop executable** that preserves the existing NVIDIA/NVML telemetry and can also identify and monitor AMD GPUs on Vulkan/RADV systems.
 
 ## Backend design
 
 - NVIDIA telemetry continues to use the existing NVML calls and data model. NVML is loaded at runtime with `dlopen()` instead of being linked against the development stub. Thus an AMD-only host can run the same dual-backend executable without `libnvidia-ml.so.1`; on a host with the NVIDIA driver, NVML is activated automatically.
-- Vulkan is used to enumerate the AMD physical device and read its name/device ID. Vulkan does not expose general-purpose temperature, power, or utilization telemetry. Those live measurements therefore come from the Linux `amdgpu` DRM/sysfs interface (`hwmon`, `mem_info_*`, `gpu_busy_percent`) and per-process DRM `fdinfo`.
+- Vulkan is used to enumerate the AMD physical device and read its name/device ID. Vulkan does not expose general-purpose temperature, power, or utilization telemetry. Those live measurements come from the optional ROCm backend when it is installed (see the ROCm section below), and otherwise from the Linux `amdgpu` DRM/sysfs interface (`hwmon`, `mem_info_*`, `gpu_busy_percent`) and per-process DRM `fdinfo`.
 - If the kernel does not implement `gpu_busy_percent`, aggregate and per-process GPU busy percentages are calculated from DRM `drm-engine-gfx` time deltas. This requires readable `/proc/<pid>/fdinfo` entries.
 - On BC-250 unified memory, ctop prefers the GTT memory counters (`mem_info_gtt_used/total`); other supported AMD devices fall back to VRAM counters if GTT counters are unavailable.
 - The NVIDIA and Vulkan backends can coexist in the same process. `--backend both` builds that executable; `auto` selects both when both development headers are installed, otherwise it selects the available backend.
@@ -62,7 +62,7 @@ The default build is automatic:
 To install into the current user's PATH without root access:
 
 ```bash
-PREFIX="$HOME/.local" ./install-ctop.sh
+PREFIX="$HOME/.local" ./install.sh
 ```
 
 Backend-specific builds are also available:
@@ -115,8 +115,9 @@ The dual-backend build succeeded and ran without an NVIDIA runtime. The metrics 
 
 AMD telemetry prefers the ROCm system-management API when the ROCm runtime is
 installed. This is a runtime-only backend: `ctop` dlopens `libamd_smi.so`
-(ROCm 6.4+, preferred) then `librocm_smi64.so.1` from `/opt/rocm/lib`, uses the
-`rsmi_*` symbol list, and needs no headers, link libraries, or build flags.
+(ROCm 6.4+, preferred) then `librocm_smi64.so.1` from `/opt/rocm/lib` (falling
+back to the default linker search path), uses the `rsmi_*` symbol list, and
+needs no headers, link libraries, or build flags.
 The build works unchanged on hosts without ROCm; verified on Ubuntu 24.04 with
 `rocm-smi-lib` and `amd-smi-lib` from the ROCm 7.2 apt repository: both
 libraries dlopen cleanly, `libamd_smi.so.26` exports the full legacy `rsmi_*`
@@ -142,6 +143,6 @@ caveats); the BC-250 path remains the sysfs fallback until then.
 ## Notes for contributors
 
 - Keep the NVML collection path intact when making telemetry/UI changes; it remains the NVIDIA implementation.
-- Vulkan provides device enumeration, not the AMD thermal/power telemetry. Do not describe the sysfs sampling code as Vulkan telemetry.
+- Vulkan provides device enumeration, not the AMD thermal/power telemetry. Do not describe the sysfs sampling code as Vulkan telemetry. The live values may additionally come from the ROCm backend when installed.
 - GPU memory has historically been called `VRAM` in some UI/API fields. Display labels are generalized to “GPU MEM”; the `/api/v1/metrics` JSON field names remain unchanged for compatibility.
 - The local extracted header and built executable are not source changes. Commit the source, build script, README updates, and this document; do not commit `.deps/`.
