@@ -81,27 +81,6 @@ AMD 백엔드에는 Vulkan 개발 패키지가 필요합니다 (Ubuntu/Debian: `
 find /usr/local -name nvml.h 2>/dev/null
 ```
 
-## 컴파일
-
-프로젝트 디렉터리에서 실행합니다.
-
-```bash
-./build-ctop.sh
-```
-
-백엔드는 자동 선택됩니다. 필요하면 직접 지정할 수 있습니다.
-
-```bash
-./build-ctop.sh --backend auto
-./build-ctop.sh --backend nvidia
-./build-ctop.sh --backend vulkan
-./build-ctop.sh --backend both
-```
-
-NVML 헤더가 기본 경로에 없다면 `NVML_INCLUDE_DIR=/path/to/include` 또는 `CUDA_ROOT=/path/to/cuda`를 지정합니다.
-
-정상적으로 완료되면 프로젝트 디렉터리에 `ctop` 실행 파일이 생성됩니다. 웹 대시보드의 HTML/CSS/JS 리소스도 이때 실행 파일에 포함됩니다.
-
 ## 설치
 
 다음 명령은 매번 GitHub의 최신 릴리스를 확인하고, 소스를 다운로드해 빌드한 뒤 설치합니다. 기존 `/usr/bin/ctop`가 있으면 그 위치를 갱신하고, 없으면 `/usr/local/bin/ctop`에 설치합니다. 권한이 필요한 경우 sudo를 요청하며, `/usr`가 읽기 전용이면 `/usr/local/bin`으로 대체합니다.
@@ -123,6 +102,27 @@ curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh 
 ```
 
 설치 스크립트는 기본 도구(`curl`, `gcc`, `tar`, `awk`)가 없으면 감지한 OS 패키지 매니저로 설치합니다. Bazzite 등 rpm-ostree 시스템은 새 배포를 만든 뒤 재부팅이 필요합니다. GPU SDK와 개발 헤더는 자동 설치하지 않으며, 누락된 백엔드 의존성은 빌드 단계에서 안내합니다. 실행 중인 ctop 프로세스는 설치 후 재시작해야 업데이트됩니다. 서비스가 저장소 안의 별도 실행 파일을 직접 가리키는 경우 `--bindir`로 해당 경로를 지정하세요.
+
+## 직접 컴파일
+
+프로젝트 디렉터리에서 실행합니다.
+
+```bash
+./build-ctop.sh
+```
+
+백엔드는 자동 선택됩니다. 필요하면 직접 지정할 수 있습니다.
+
+```bash
+./build-ctop.sh --backend auto
+./build-ctop.sh --backend nvidia
+./build-ctop.sh --backend vulkan
+./build-ctop.sh --backend both
+```
+
+NVML 헤더가 기본 경로에 없다면 `NVML_INCLUDE_DIR=/path/to/include` 또는 `CUDA_ROOT=/path/to/cuda`를 지정합니다.
+
+정상적으로 완료되면 프로젝트 디렉터리에 `ctop` 실행 파일이 생성됩니다. 웹 대시보드의 HTML/CSS/JS 리소스도 이때 실행 파일에 포함됩니다.
 
 ## 실행
 

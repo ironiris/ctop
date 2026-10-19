@@ -69,27 +69,6 @@ The AMD backend needs Vulkan development files (Ubuntu/Debian: `libvulkan-dev`).
 find /usr/local -name nvml.h 2>/dev/null
 ```
 
-## Build
-
-From the project directory:
-
-```bash
-./build-ctop.sh
-```
-
-Backends are selected automatically, or can be chosen explicitly:
-
-```bash
-./build-ctop.sh --backend auto
-./build-ctop.sh --backend nvidia
-./build-ctop.sh --backend vulkan
-./build-ctop.sh --backend both
-```
-
-If the NVML header is outside standard paths, set `NVML_INCLUDE_DIR=/path/to/include` or `CUDA_ROOT=/path/to/cuda`.
-
-This creates the `ctop` executable in the project directory. The web dashboard's HTML, CSS, and JavaScript resources are embedded into the executable during this build.
-
 ## Install
 
 This command always checks the latest GitHub release, downloads its source, builds it, and installs the executable. It updates `/usr/bin/ctop` if present, otherwise installs to `/usr/local/bin/ctop`. It requests elevated permission if needed and falls back to `/usr/local/bin` if `/usr` is read-only.
@@ -111,6 +90,27 @@ curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh 
 ```
 
 If missing, the installer uses the detected OS package manager to install the base tools `curl`, `gcc`, `tar`, and `awk`. rpm-ostree systems such as Bazzite need a reboot after creating a new deployment. GPU SDKs and development headers are not installed automatically; the build step reports missing backend dependencies. Restart any running ctop process after installation. If a service launches a separate binary from a checkout, pass its directory with `--bindir`.
+
+## Build
+
+From the project directory:
+
+```bash
+./build-ctop.sh
+```
+
+Backends are selected automatically, or can be chosen explicitly:
+
+```bash
+./build-ctop.sh --backend auto
+./build-ctop.sh --backend nvidia
+./build-ctop.sh --backend vulkan
+./build-ctop.sh --backend both
+```
+
+If the NVML header is outside standard paths, set `NVML_INCLUDE_DIR=/path/to/include` or `CUDA_ROOT=/path/to/cuda`.
+
+This creates the `ctop` executable in the project directory. The web dashboard's HTML, CSS, and JavaScript resources are embedded into the executable during this build.
 
 ## Run
 

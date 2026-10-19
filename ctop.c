@@ -41,7 +41,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.4.2"
+#define CTOP_VERSION "0.4.3"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
