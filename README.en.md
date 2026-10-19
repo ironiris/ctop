@@ -2,7 +2,7 @@
 
 A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, network, and disk I/O.
 
-`ctop` is a single C11 program with no curses dependency. NVIDIA data comes from NVML; AMD devices are enumerated with Vulkan and monitored through Linux `amdgpu` interfaces.
+`ctop` is a single C11 program with no curses dependency. NVIDIA data comes from NVML; AMD devices are enumerated with Vulkan and monitored through Linux `amdgpu` interfaces. When the ROCm runtime (AMD SMI) is installed, AMD metrics prefer it over sysfs.
 
 ![ctop terminal UI](docs/images/ctop.png)
 
@@ -11,6 +11,7 @@ A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, 
 ## Features
 
 - GPU temperature, power, memory, and utilization
+- AMD metrics prefer the ROCm (AMD SMI) API when it is detected at runtime, falling back to the existing Vulkan/sysfs path
 - GPU process table with `GPU-MEM`, `GPU-LOAD`, `CPU-AVG`, and per-process host RAM percentage (`MEM`)
 - RAM and SWAP usage with history graphs
 - Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
@@ -43,6 +44,7 @@ Check dependencies without compiling:
 
 - NVIDIA monitoring requires an NVIDIA driver that provides NVML (`nvidia-smi` should work).
 - AMD monitoring requires the Vulkan loader, the `amdgpu` kernel driver, and accessible DRM/sysfs data.
+- ROCm support is optional and needs no build dependency: when `/opt/rocm` provides `libamd_smi.so` or `librocm_smi64.so.1`, AMD temperature, power, memory, and utilization are collected through the AMD SMI API; otherwise the Vulkan/sysfs path is used unchanged.
 - An interactive Linux terminal at least 76 columns by 13 rows for TUI mode
 - No terminal is needed when running web-only with `--no-tui`
 

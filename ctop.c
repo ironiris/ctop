@@ -41,7 +41,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.4.4"
+#define CTOP_VERSION "0.4.5"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -138,6 +138,7 @@ typedef struct {
     char pci_bus_id[24];
     char sysfs_path[PATH_MAX];
     char name[96];
+    char data_source[16];
     double temperature;
     bool temperature_valid;
     double power;
@@ -791,6 +792,187 @@ static void collect_process_sm(GpuInfo *gpu) {
         count = requested + 16;
     }
     mark_idle_gpu_processes(gpu);
+}
+#endif
+
+#if defined(CTOP_ENABLE_VULKAN)
+/* ------------------------------------------------------------------------- */
+/* ROCm (AMD SMI) backend — optional runtime data source for AMD telemetry   */
+/*                                                                           */
+/* Loaded with dlopen(); no build-time headers or link libraries are needed. */
+/* libamd_smi.so (ROCm 6.4+) also exports the legacy rsmi_* API, so one      */
+/* symbol list covers both candidates. Enum arguments are int-sized at the   */
+/* SysV x86-64 ABI; the constants below match the installed ROCm headers.    */
+/* Every metric degrades back to the Vulkan/sysfs path when unavailable.     */
+
+#define ROCM_STATUS_SUCCESS 0
+#define ROCM_TEMP_METRIC_CURRENT 0
+#define ROCM_TEMP_SENSOR_EDGE 0
+#define ROCM_TEMP_SENSOR_JUNCTION 1
+#define ROCM_MEM_TYPE_VRAM 0
+#define ROCM_MEM_TYPE_GTT 2
+
+typedef struct {
+    void *library;
+    int (*init)(uint64_t);
+    int (*shut_down)(void);
+    int (*num_monitor_devices)(uint32_t *);
+    int (*dev_pci_id_get)(uint32_t, uint64_t *);
+    int (*status_string)(int, const char **);
+    int (*dev_temp_metric_get)(uint32_t, uint32_t, int, int64_t *);
+    int (*dev_power_ave_get)(uint32_t, uint32_t, uint64_t *);
+    int (*dev_power_cap_get)(uint32_t, uint32_t, uint64_t *);
+    int (*dev_memory_total_get)(uint32_t, int, uint64_t *);
+    int (*dev_memory_usage_get)(uint32_t, int, uint64_t *);
+    int (*dev_busy_percent_get)(uint32_t, uint32_t *);
+} RocmApi;
+
+static RocmApi rocm_api;
+static bool rocm_initialized;
+
+static const char *rocm_error_string(int status) {
+    static char fallback[48];
+    const char *text = NULL;
+    if (rocm_api.status_string &&
+        rocm_api.status_string(status, &text) == ROCM_STATUS_SUCCESS && text)
+        return text;
+    snprintf(fallback, sizeof(fallback), "status=%d", status);
+    return fallback;
+}
+
+static bool initialize_rocm_backend(char *error, size_t error_size) {
+    const char *libraries[] = {
+        "/opt/rocm/lib/libamd_smi.so",
+        "/opt/rocm/lib/librocm_smi64.so.1",
+        "libamd_smi.so",
+        "librocm_smi64.so.1",
+    };
+    for (size_t i = 0; i < ARRAY_LEN(libraries) && !rocm_api.library; i++)
+        rocm_api.library = dlopen(libraries[i], RTLD_NOW | RTLD_LOCAL);
+    if (!rocm_api.library) {
+        snprintf(error, error_size, "ROCm library unavailable: %s", dlerror());
+        return false;
+    }
+#define LOAD_ROCM(member, symbol) do { \
+        void *address = dlsym(rocm_api.library, symbol); \
+        if (!address) { \
+            snprintf(error, error_size, "ROCm symbol %s unavailable", symbol); \
+            goto failed; \
+        } \
+        _Static_assert(sizeof(rocm_api.member) == sizeof(address), "POSIX function pointer size mismatch"); \
+        memcpy(&rocm_api.member, &address, sizeof(address)); \
+    } while (0)
+#define LOAD_ROCM_OPTIONAL(member, symbol) do { \
+        void *address = dlsym(rocm_api.library, symbol); \
+        if (address) memcpy(&rocm_api.member, &address, sizeof(address)); \
+    } while (0)
+    LOAD_ROCM(init, "rsmi_init");
+    LOAD_ROCM(shut_down, "rsmi_shut_down");
+    LOAD_ROCM(num_monitor_devices, "rsmi_num_monitor_devices");
+    LOAD_ROCM(dev_pci_id_get, "rsmi_dev_pci_id_get");
+    LOAD_ROCM_OPTIONAL(status_string, "rsmi_status_string");
+    LOAD_ROCM_OPTIONAL(dev_temp_metric_get, "rsmi_dev_temp_metric_get");
+    LOAD_ROCM_OPTIONAL(dev_power_ave_get, "rsmi_dev_power_ave_get");
+    LOAD_ROCM_OPTIONAL(dev_power_cap_get, "rsmi_dev_power_cap_get");
+    LOAD_ROCM_OPTIONAL(dev_memory_total_get, "rsmi_dev_memory_total_get");
+    LOAD_ROCM_OPTIONAL(dev_memory_usage_get, "rsmi_dev_memory_usage_get");
+    LOAD_ROCM_OPTIONAL(dev_busy_percent_get, "rsmi_dev_busy_percent_get");
+
+    int result = rocm_api.init(0);
+    if (result != ROCM_STATUS_SUCCESS) {
+        snprintf(error, error_size, "ROCm initialization failed: %s", rocm_error_string(result));
+        goto failed;
+    }
+    rocm_initialized = true;
+    return true;
+
+failed:
+    dlclose(rocm_api.library);
+    memset(&rocm_api, 0, sizeof(rocm_api));
+    return false;
+}
+
+static void shutdown_rocm_backend(void) {
+    if (rocm_initialized && rocm_api.shut_down) rocm_api.shut_down();
+    rocm_initialized = false;
+    if (rocm_api.library) dlclose(rocm_api.library);
+    memset(&rocm_api, 0, sizeof(rocm_api));
+}
+
+/* ROCm BDFID layout: domain<<32 | partition<<28 | bus<<8 | device<<3 | function.
+ * Single-partition desktop and APUs carry a zero partition, matching the
+ * domain:bus:device.function slot name used for the Vulkan/sysfs path. */
+static bool rocm_pci_bus_id_to_bdfid(const char *pci_bus_id, uint64_t *bdfid) {
+    unsigned int domain = 0, bus = 0, device = 0, function = 0;
+    if (sscanf(pci_bus_id, "%4x:%2x:%2x.%1u", &domain, &bus, &device, &function) != 4)
+        return false;
+    *bdfid = ((uint64_t)domain << 32) | ((uint64_t)bus << 8) | ((uint64_t)device << 3) | function;
+    return true;
+}
+
+static uint32_t rocm_match_device_index(const GpuInfo *gpu) {
+    uint64_t wanted = 0;
+    if (!gpu->pci_bus_id[0] || !rocm_pci_bus_id_to_bdfid(gpu->pci_bus_id, &wanted))
+        return UINT32_MAX;
+    uint32_t count = 0;
+    if (rocm_api.num_monitor_devices(&count) != ROCM_STATUS_SUCCESS)
+        return UINT32_MAX;
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t bdfid = 0;
+        if (rocm_api.dev_pci_id_get(i, &bdfid) == ROCM_STATUS_SUCCESS && bdfid == wanted)
+            return i;
+    }
+    return UINT32_MAX;
+}
+
+static void rocm_enrich_amd_gpu(GpuInfo *gpu) {
+    uint32_t dv_ind = rocm_match_device_index(gpu);
+    if (dv_ind == UINT32_MAX) return;
+    bool used = false;
+
+    int64_t millidegrees = 0;
+    if (rocm_api.dev_temp_metric_get &&
+        (rocm_api.dev_temp_metric_get(dv_ind, ROCM_TEMP_SENSOR_EDGE,
+                                      ROCM_TEMP_METRIC_CURRENT, &millidegrees) == ROCM_STATUS_SUCCESS ||
+         rocm_api.dev_temp_metric_get(dv_ind, ROCM_TEMP_SENSOR_JUNCTION,
+                                      ROCM_TEMP_METRIC_CURRENT, &millidegrees) == ROCM_STATUS_SUCCESS)) {
+        gpu->temperature = (double)millidegrees / 1000.0;
+        gpu->temperature_valid = true;
+        used = true;
+    }
+    uint64_t microwatts = 0;
+    if (rocm_api.dev_power_ave_get &&
+        rocm_api.dev_power_ave_get(dv_ind, 0, &microwatts) == ROCM_STATUS_SUCCESS) {
+        gpu->power = (double)microwatts / 1000000.0;
+        gpu->power_valid = true;
+        used = true;
+    }
+    if (rocm_api.dev_power_cap_get &&
+        rocm_api.dev_power_cap_get(dv_ind, 0, &microwatts) == ROCM_STATUS_SUCCESS) {
+        gpu->power_limit = (double)microwatts / 1000000.0;
+        gpu->power_limit_valid = true;
+        used = true;
+    }
+    if (rocm_api.dev_memory_total_get && rocm_api.dev_memory_usage_get) {
+        int mem_type = gpu->prefer_gtt ? ROCM_MEM_TYPE_GTT : ROCM_MEM_TYPE_VRAM;
+        uint64_t total = 0, used_bytes = 0;
+        if (rocm_api.dev_memory_total_get(dv_ind, mem_type, &total) == ROCM_STATUS_SUCCESS &&
+            rocm_api.dev_memory_usage_get(dv_ind, mem_type, &used_bytes) == ROCM_STATUS_SUCCESS && total) {
+            gpu->memory_total = total;
+            gpu->memory_used = used_bytes;
+            gpu->memory_valid = true;
+            used = true;
+        }
+    }
+    uint32_t busy_percent = 0;
+    if (rocm_api.dev_busy_percent_get &&
+        rocm_api.dev_busy_percent_get(dv_ind, &busy_percent) == ROCM_STATUS_SUCCESS &&
+        busy_percent <= 100) {
+        gpu->utilization = busy_percent;
+        gpu->utilization_valid = true;
+        used = true;
+    }
+    if (used) snprintf(gpu->data_source, sizeof(gpu->data_source), "rocm");
 }
 #endif
 
@@ -1461,6 +1643,8 @@ static void append_vulkan_gpus(GpuInfo *gpus, int *gpu_count) {
         snprintf(gpu->pci_bus_id, sizeof(gpu->pci_bus_id), "%s", device->pci_bus_id);
         snprintf(gpu->sysfs_path, sizeof(gpu->sysfs_path), "%s", device->sysfs_path);
         read_amd_gpu_metrics(gpu);
+        snprintf(gpu->data_source, sizeof(gpu->data_source), "sysfs");
+        rocm_enrich_amd_gpu(gpu);
         (*gpu_count)++;
     }
 }
@@ -1471,6 +1655,7 @@ static void shutdown_gpu_backends(void) {
     shutdown_nvml_backend();
 #endif
 #if defined(CTOP_ENABLE_VULKAN)
+    shutdown_rocm_backend();
     if (vulkan_instance) vkDestroyInstance(vulkan_instance, NULL);
     vulkan_instance = VK_NULL_HANDLE;
     vulkan_gpu_count = 0;
@@ -2307,7 +2492,13 @@ static void draw_gpu_status(Screen *screen, int top, const GpuInfo *gpus, int gp
         char gpu_identifier[16];
         format_gpu_identifier(gpu_identifier, sizeof(gpu_identifier), gpu);
         screen_put_attr(screen, row, 0, gpu_identifier, 4, ATTR_CYAN);
-        screen_put(screen, row, 5, gpu->name, 20);
+        char name_label[128];
+        if (gpu->data_source[0] &&
+            strlen(gpu->name) + strlen(gpu->data_source) + 3 <= 20)
+            snprintf(name_label, sizeof(name_label), "%s (%s)", gpu->name, gpu->data_source);
+        else
+            snprintf(name_label, sizeof(name_label), "%s", gpu->name);
+        screen_put(screen, row, 5, name_label, 20);
         unsigned char temperature_attr = threshold_attr_value(gpu->temperature, gpu->temperature_valid, 70.0, 85.0);
         if (gpu->temperature_valid) screen_putf_attr(screen, row, 27, 5, temperature_attr, "%.0fC", gpu->temperature);
         else screen_put_attr(screen, row, 27, "N/A", 5, ATTR_DIM);
@@ -3639,6 +3830,7 @@ static int collect_snapshot(GpuInfo *gpus, int *gpu_count, SystemInfo *system,
                 if (nvml_api.device_get_handle_by_index_v2(i, &gpu->handle) != NVML_SUCCESS) continue;
                 gpu->index = *gpu_count;
                 nvml_api.device_get_name(gpu->handle, gpu->name, sizeof(gpu->name));
+                snprintf(gpu->data_source, sizeof(gpu->data_source), "nvml");
                 unsigned int value = 0;
                 if (nvml_api.device_get_temperature(gpu->handle, NVML_TEMPERATURE_GPU, &value) == NVML_SUCCESS) {
                     gpu->temperature = value;
@@ -4255,6 +4447,7 @@ static bool remote_parse_metrics(RemoteMonitor *monitor, const char *json) {
         gpu->index = i;
         json_get_int(item, "index", &gpu->index);
         json_get_string(item, "name", gpu->name, sizeof(gpu->name));
+        json_get_string(item, "source", gpu->data_source, sizeof(gpu->data_source));
         json_get_bool(item, "temperature_valid", &gpu->temperature_valid);
         json_get_double(item, "temperature", &gpu->temperature);
         json_get_bool(item, "power_valid", &gpu->power_valid);
@@ -4683,6 +4876,8 @@ static char *web_metrics_json(const GpuInfo *gpus, int gpu_count,
         first_gpu = false;
         fprintf(stream, "{\"index\":%d,\"name\":", gpu->index);
         json_string(stream, gpu->name);
+        fputs(",\"source\":", stream);
+        json_string(stream, gpu->data_source);
         fputs(",\"temperature_valid\":", stream);
         fputs(gpu->temperature_valid ? "true" : "false", stream);
         fputs(",\"temperature\":", stream);
@@ -5445,6 +5640,13 @@ int main(int argc, char **argv) {
     char vulkan_error[256] = "";
     if (!initialize_vulkan_backend(vulkan_error, sizeof(vulkan_error)))
         debug_log("%s", vulkan_error);
+    if (vulkan_gpu_count) {
+        char rocm_error[256] = "";
+        if (initialize_rocm_backend(rocm_error, sizeof(rocm_error)))
+            debug_log("ROCm backend initialized");
+        else
+            debug_log("%s", rocm_error);
+    }
     if (strcmp(driver, "N/A") == 0) snprintf(driver, sizeof(driver), "Vulkan/AMDGPU");
 #endif
     debug_log("driver=%s cuda_library=%s cuda_runtime=%s cuda_driver=%d",

@@ -2,7 +2,7 @@
 
 AMD/NVIDIA GPU, 시스템 메모리, 프로세스, 네트워크 및 디스크 I/O를 터미널에서 확인하는 가벼운 모니터링 도구입니다.
 
-C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 않습니다. NVIDIA GPU 정보는 NVML에서, AMD 장치 식별은 Vulkan에서 처리하며 AMD 센서 데이터는 Linux `amdgpu` 인터페이스에서 읽습니다.
+C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 않습니다. NVIDIA GPU 정보는 NVML에서, AMD 장치 식별은 Vulkan에서 처리하며 AMD 센서 데이터는 Linux `amdgpu` 인터페이스에서 읽습니다. ROCm(AMD SMI) 런타임이 감지되면 AMD 지표 수집에 그 API를 우선합니다.
 
 [English README](README.en.md)
 
@@ -13,6 +13,7 @@ C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 �
 ## 주요 기능
 
 - GPU 온도, 전력, 메모리, GPU 사용률 표시
+- ROCm(AMD SMI)이 런타임에서 감지되면 AMD GPU 지표에 우선 사용 (없으면 기존 Vulkan/sysfs 경로로 폴백)
 - GPU 프로세스별 GPU 메모리, GPU Load/CPU 사용률, 프로세스 호스트 RAM 비율 표시
 - RAM/SWAP 사용량 및 히스토리 그래프
 - 디스크 I/O 실시간 그래프와 최근 400초 최대 피크 기준 Y축
@@ -226,5 +227,5 @@ NET | <링크속도>(사용률) | TOTAL:처리량 | ▼:수신 | ▲:송신
 ## 주의사항
 
 - NVIDIA 백엔드는 NVML 헤더가 필요하며, NVIDIA 드라이버가 설치된 시스템에서 NVML을 동적으로 불러옵니다. NVML stub 라이브러리는 필요하지 않습니다.
-- Vulkan 백엔드는 AMD 장치를 열거하고, 온도·전력·메모리·사용률은 Linux `amdgpu` DRM/sysfs에서 읽습니다. 커널에서 `gpu_busy_percent`를 제공하지 않으면 `/proc/<pid>/fdinfo` DRM 엔진 시간 차이로 사용률을 계산합니다.
+- Vulkan 백엔드는 AMD 장치를 열거하고, 온도·전력·메모리·사용률은 Linux `amdgpu` DRM/sysfs에서 읽습니다. 커널에서 `gpu_busy_percent`를 제공하지 않으면 `/proc/<pid>/fdinfo` DRM 엔진 시간 차이로 사용률을 계산합니다. ROCm 런타임이 설치된 시스템에서는 `libamd_smi.so`/`librocm_smi64.so.1`을 런타임에 dlopen으로 불러 온도·전력·메모리·사용률을 AMD SMI API로 수집하며, 빌드 의존성은 없고 미설치 시 기존 동작과 동일합니다. PCI bus ID로 Vulkan 장치를 매칭하며 프로세스별 정보는 계속 DRM `fdinfo`를 사용합니다.
 - 네트워크 링크 속도를 읽을 수 없는 인터페이스는 사용률을 계산할 수 없습니다.

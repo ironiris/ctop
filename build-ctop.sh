@@ -171,6 +171,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
         vulkan|both)
             printf 'Vulkan header:  %s/vulkan/vulkan.h\n' "$VULKAN_INCLUDE_DIR"
             printf 'Vulkan loader:  available (-lvulkan)\n'
+            printf 'ROCm/AMD SMI:   optional, loaded at runtime from /opt/rocm (no build dependency)\n'
             ;;
     esac
     echo "all selected backend dependencies are present"

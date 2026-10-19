@@ -385,7 +385,7 @@ function renderGpuRows() {
     const vram = gpu.memory_valid
       ? `${gib(gpu.memory_used)}/${gib(gpu.memory_total)}${vramPercent === null ? "" : ` (${percent(vramPercent)})`}` : "—";
     return `<tr>
-      <td class="mono">${sources.length > 1 ? esc(source.prefix) : ""}${esc(gpu.index)}</td><td>${esc(gpu.name || `GPU ${gpu.index}`)}</td>
+      <td class="mono">${sources.length > 1 ? esc(source.prefix) : ""}${esc(gpu.index)}</td><td>${esc(gpu.name || `GPU ${gpu.index}`)}${gpu.source ? ` <span class="gpu-source">${esc(gpu.source)}</span>` : ""}</td>
       <td class="mono">${gpu.temperature_valid ? `${number(gpu.temperature, 0)}°C` : "—"}</td>
       <td class="mono">${power}</td><td class="mono">${vram}</td>
       <td class="num mono">${gpuPercent === null ? "—" : percent(gpuPercent)}</td>
