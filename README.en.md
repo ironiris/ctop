@@ -74,19 +74,19 @@ find /usr/local -name nvml.h 2>/dev/null
 This command always checks the latest GitHub release, downloads its source, builds it, and installs the executable. It updates `/usr/bin/ctop` if present, otherwise installs to `/usr/local/bin/ctop`. It requests elevated permission if needed and falls back to `/usr/local/bin` if `/usr` is read-only.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh
 ```
 
 To install to `/usr/bin/ctop`, pass `--prefix /usr`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --prefix /usr
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh -s -- --prefix /usr
 ```
 
 If a service uses a separate executable such as `~/ctop/ctop`, specify its directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --bindir "$HOME/ctop"
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh -s -- --bindir "$HOME/ctop"
 ```
 
 If missing, the installer uses the detected OS package manager to install the base tools `curl`, `gcc`, `tar`, and `awk`. rpm-ostree systems such as Bazzite need a reboot after creating a new deployment. GPU SDKs and development headers are not installed automatically; the build step reports missing backend dependencies. Restart any running ctop process after installation. If a service launches a separate binary from a checkout, pass its directory with `--bindir`.

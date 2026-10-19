@@ -86,19 +86,19 @@ find /usr/local -name nvml.h 2>/dev/null
 다음 명령은 매번 GitHub의 최신 릴리스를 확인하고, 소스를 다운로드해 빌드한 뒤 설치합니다. 기존 `/usr/bin/ctop`가 있으면 그 위치를 갱신하고, 없으면 `/usr/local/bin/ctop`에 설치합니다. 권한이 필요한 경우 sudo를 요청하며, `/usr`가 읽기 전용이면 `/usr/local/bin`으로 대체합니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh
 ```
 
 `/usr/bin/ctop`에 설치하려면 `--prefix /usr`를 지정합니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --prefix /usr
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh -s -- --prefix /usr
 ```
 
 서비스가 `~/ctop/ctop`처럼 별도 실행 파일을 사용한다면 해당 디렉터리를 지정합니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install-ctop.sh | sh -s -- --bindir "$HOME/ctop"
+curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh -s -- --bindir "$HOME/ctop"
 ```
 
 설치 스크립트는 기본 도구(`curl`, `gcc`, `tar`, `awk`)가 없으면 감지한 OS 패키지 매니저로 설치합니다. Bazzite 등 rpm-ostree 시스템은 새 배포를 만든 뒤 재부팅이 필요합니다. GPU SDK와 개발 헤더는 자동 설치하지 않으며, 누락된 백엔드 의존성은 빌드 단계에서 안내합니다. 실행 중인 ctop 프로세스는 설치 후 재시작해야 업데이트됩니다. 서비스가 저장소 안의 별도 실행 파일을 직접 가리키는 경우 `--bindir`로 해당 경로를 지정하세요.
