@@ -10,6 +10,8 @@ BINDIR_EXPLICIT=0
 [ -n "$BINDIR" ] && BINDIR_EXPLICIT=1
 BACKEND=${CTOP_BACKEND:-auto}
 DESTDIR=${DESTDIR:-}
+SUDO_AUTHENTICATED=0
+SUDO_AUTH_FAILED=0
 
 usage() {
     cat <<'EOF'
@@ -163,6 +165,14 @@ install_binary() {
         mv -f "$staged" "$TARGET"
     elif command -v sudo >/dev/null 2>&1; then
         echo "Elevated permission is needed to update $TARGET."
+        if [ "$SUDO_AUTHENTICATED" -eq 0 ]; then
+            if ! sudo -v; then
+                SUDO_AUTH_FAILED=1
+                echo "Could not authenticate with sudo. Run this installer in an interactive terminal." >&2
+                return 1
+            fi
+            SUDO_AUTHENTICATED=1
+        fi
         sudo install -D -m 755 "$BINARY" "$staged" && sudo mv -f "$staged" "$TARGET"
     else
         return 1
@@ -170,6 +180,7 @@ install_binary() {
 }
 
 if ! install_binary; then
+    if [ "$SUDO_AUTH_FAILED" -eq 1 ]; then exit 1; fi
     if [ "$BINDIR_EXPLICIT" -eq 0 ] && [ "$PREFIX_EXPLICIT" -eq 0 ] && [ "$PREFIX" = /usr ]; then
         echo "Cannot update /usr/bin; falling back to /usr/local/bin."
         PREFIX=/usr/local
