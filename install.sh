@@ -9,6 +9,7 @@ BINDIR=${CTOP_BINDIR:-}
 BINDIR_EXPLICIT=0
 [ -n "$BINDIR" ] && BINDIR_EXPLICIT=1
 BACKEND=${CTOP_BACKEND:-auto}
+SOURCE=${CTOP_SOURCE:-main}
 DESTDIR=${DESTDIR:-}
 SUDO_AUTHENTICATED=0
 SUDO_AUTH_FAILED=0
@@ -17,19 +18,21 @@ usage() {
     cat <<'EOF'
 Usage: install.sh [--prefix DIR|--bindir DIR] [--backend auto|nvidia|vulkan|both]
 
-Always checks GitHub for the latest ctop release, downloads its source,
-builds it, and updates the installed executable.
+Downloads a fresh source archive from the selected channel, builds it, and
+updates the installed executable. The default channel is the latest main commit.
 
 Options:
   --prefix DIR       install as DIR/bin/ctop (default: existing /usr/bin/ctop, else /usr/local/bin)
   --bindir DIR       install as DIR/ctop (for a custom service executable path)
   --backend NAME     choose GPU backend (default: auto)
+  --source CHANNEL   main or release (default: main)
   -h, --help         show this help
 
 Environment:
   PREFIX             same as --prefix
   CTOP_BINDIR        same as --bindir
   CTOP_BACKEND       same as --backend
+  CTOP_SOURCE        same as --source
   DESTDIR            staging root for packaging
 EOF
 }
@@ -56,6 +59,12 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --backend=*) BACKEND=${1#*=} ;;
+        --source)
+            [ $# -ge 2 ] || { echo "--source requires main or release" >&2; exit 2; }
+            SOURCE=$2
+            shift
+            ;;
+        --source=*) SOURCE=${1#*=} ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'Unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -65,6 +74,10 @@ done
 case $BACKEND in
     auto|nvidia|vulkan|both) ;;
     *) printf 'Invalid backend: %s\n' "$BACKEND" >&2; exit 2 ;;
+esac
+case $SOURCE in
+    main|release) ;;
+    *) printf 'Invalid source: %s (choose main or release)\n' "$SOURCE" >&2; exit 2 ;;
 esac
 
 if [ -z "$PREFIX" ]; then
@@ -128,16 +141,21 @@ ensure_base_tools
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/ctop-install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
-printf 'Checking the latest ctop release...\n'
-curl -fsSL "https://api.github.com/repos/ironiris/ctop/releases/latest" -o "$TMP/release.json"
-RELEASE=$(awk -F '"' '/"tag_name"[[:space:]]*:/ { print $4; exit }' "$TMP/release.json")
-case $RELEASE in
-    v[0-9]*) ;;
-    *) printf 'Could not determine a valid latest release tag: %s\n' "$RELEASE" >&2; exit 1 ;;
-esac
-
-echo "Downloading ctop $RELEASE source."
-curl -fsSL "$REPOSITORY/archive/refs/tags/$RELEASE.tar.gz" -o "$TMP/ctop.tar.gz"
+if [ "$SOURCE" = main ]; then
+    echo "Downloading a fresh archive of the latest ctop main source."
+    SOURCE_URL="$REPOSITORY/archive/refs/heads/main.tar.gz"
+else
+    printf 'Checking the latest ctop release...\n'
+    curl -fsSL "https://api.github.com/repos/ironiris/ctop/releases/latest" -o "$TMP/release.json"
+    RELEASE=$(awk -F '"' '/"tag_name"[[:space:]]*:/ { print $4; exit }' "$TMP/release.json")
+    case $RELEASE in
+        v[0-9]*) ;;
+        *) printf 'Could not determine a valid latest release tag: %s\n' "$RELEASE" >&2; exit 1 ;;
+    esac
+    echo "Downloading ctop $RELEASE source."
+    SOURCE_URL="$REPOSITORY/archive/refs/tags/$RELEASE.tar.gz"
+fi
+curl -fsSL "$SOURCE_URL" -o "$TMP/ctop.tar.gz"
 mkdir "$TMP/source"
 tar -xzf "$TMP/ctop.tar.gz" -C "$TMP/source"
 BUILD_SCRIPT=$(find "$TMP/source" -type f -name build-ctop.sh -print -quit)

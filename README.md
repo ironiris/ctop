@@ -83,7 +83,7 @@ find /usr/local -name nvml.h 2>/dev/null
 
 ## 설치
 
-다음 명령은 매번 GitHub의 최신 릴리스를 확인하고, 소스를 다운로드해 빌드한 뒤 설치합니다. 기존 `/usr/bin/ctop`가 있으면 그 위치를 갱신하고, 없으면 `/usr/local/bin/ctop`에 설치합니다. 권한이 필요한 경우 sudo를 요청하며, `/usr`가 읽기 전용이면 `/usr/local/bin`으로 대체합니다.
+다음 명령은 매번 GitHub `main`의 최신 소스를 새로 다운로드해 빌드하고 설치합니다. 기존 `/usr/bin/ctop`가 있으면 그 위치를 갱신하고, 없으면 `/usr/local/bin/ctop`에 설치합니다. 권한이 필요한 경우 sudo를 요청하며, `/usr`가 읽기 전용이면 `/usr/local/bin`으로 대체합니다.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh

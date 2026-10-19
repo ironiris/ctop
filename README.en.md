@@ -71,7 +71,7 @@ find /usr/local -name nvml.h 2>/dev/null
 
 ## Install
 
-This command always checks the latest GitHub release, downloads its source, builds it, and installs the executable. It updates `/usr/bin/ctop` if present, otherwise installs to `/usr/local/bin/ctop`. It requests elevated permission if needed and falls back to `/usr/local/bin` if `/usr` is read-only.
+This command downloads a fresh archive of the latest source on GitHub `main`, builds it, and installs the executable. It updates `/usr/bin/ctop` if present, otherwise installs to `/usr/local/bin/ctop`. It requests elevated permission if needed and falls back to `/usr/local/bin` if `/usr` is read-only.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh
