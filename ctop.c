@@ -313,6 +313,8 @@ typedef struct {
     int selected_gpu;
     int selected_source_id;
     pid_t selected_pid;
+    char section_notice[128];
+    double section_notice_until;
     bool kill_prompt;
     pid_t prompt_pid;
     char notice[128];
@@ -3224,6 +3226,15 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
             add_click_target(ui, y, 0, 1, (unsigned char)(UI_KEY_MOVE_SECTION_UP_BASE + i));
         if (can_move_down)
             add_click_target(ui, y, 2, 3, (unsigned char)(UI_KEY_MOVE_SECTION_DOWN_BASE + i));
+        if ((int)i == ui->selected_section && ui->section_notice[0] &&
+            monotonic_seconds() < ui->section_notice_until) {
+            const char *rule_title = marked_title;
+            int notice_left = 8 + (int)strlen(rule_title);
+            int notice_right = screen->cols - 2;
+            if (notice_left < notice_right)
+                screen_put_attr(screen, y, notice_left, ui->section_notice,
+                                notice_right - notice_left, ATTR_RED);
+        }
         y++;
 
         if (section->type == SECTION_GPU_LIST) {
@@ -3616,6 +3627,8 @@ static void handle_key(unsigned char key, UiState *ui, bool *paused, bool *help_
 
     ui->notice[0] = '\0';
     ui->notice_error = false;
+    ui->section_notice[0] = '\0';
+    ui->section_notice_until = 0.0;
     if (key == 'h' || key == 'H') *help_visible = !*help_visible;
     else if (key == 'a' || key == 'A') {
         ui->monitor_prompt = true;
@@ -3628,7 +3641,16 @@ static void handle_key(unsigned char key, UiState *ui, bool *paused, bool *help_
     } else if (key == 'u' || key == 'U') move_dashboard_section(ui, -1);
     else if (key == 'd' || key == 'D') move_dashboard_section(ui, 1);
     else if (key == 'c' || key == 'C') {
-        if (ui->section_count) toggle_dashboard_section(&ui->sections[ui->selected_section], ui);
+        if (ui->section_count) {
+            DashboardSection *section = &ui->sections[ui->selected_section];
+            if (section->type == SECTION_GPU_LIST) {
+                snprintf(ui->section_notice, sizeof(ui->section_notice),
+                         "ERROR: GPU LIST cannot be folded");
+                ui->section_notice_until = monotonic_seconds() + 2.5;
+            } else {
+                toggle_dashboard_section(section, ui);
+            }
+        }
     } else if (key == 'x' || key == 'X') {
         if (ui->section_count && ui->sections[ui->selected_section].source_id != 0 &&
             ui->sections[ui->selected_section].source_id != -1) {
