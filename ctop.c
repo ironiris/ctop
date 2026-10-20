@@ -3027,7 +3027,7 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
     ui->click_target_count = 0;
     char controls[256];
     snprintf(controls, sizeof(controls),
-             "%s %.1fs | q quit h help a monitor [ ] select u/d move x remove c fold g GPU m SYS space pause +/- rate r reset j next k kill",
+             "%s %.1fs | q quit h help a monitor [ ] select(>) u/d move x remove c fold selected g GPU m SYS space pause +/- rate r reset j next k kill",
              paused ? "PAUSED" : "LIVE", interval);
     screen_put_attr(screen, 2, 0, controls, screen->cols, ATTR_DIM);
     const struct { const char *label; unsigned char key; int offset; } hits[] = {
@@ -3176,7 +3176,7 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
             "a            focus the bottom REMOTE address field",
             "Enter address in REMOTE; optional credentials go in TOKEN",
             "Click ADD to connect; Tab/Enter moves focus to TOKEN and ADD",
-            "[ / ]        select a dashboard section",
+            "[ / ]        select a dashboard section (marked with >)",
             "u / d        move selected section up/down",
             "x            remove the selected remote monitor",
             "g / m        collapse/expand local GPU / SYSTEM",
@@ -3184,7 +3184,7 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
             "+ / -        increase/decrease refresh interval",
             "j            select next GPU process",
             "k / K        send SIGTERM to a selected local process",
-            "r            clear graph history; c collapses selected section",
+            "r            clear graph history; c folds/unfolds only the selected section",
             "",
             "Remote monitors use unencrypted HTTP; do not send tokens over untrusted networks.",
         };

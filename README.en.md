@@ -192,7 +192,7 @@ j                         select the next GPU process
 k / K                     confirm SIGTERM for a selected local process
 ```
 
-Section order lasts for the current TUI session. When the terminal supports SGR mouse input, click `▲`/`▼` before a title to move that section up or down, and the right triangle to collapse or expand it.
+Use `[ / ]` to move between sections; the currently selected section is marked with `>` before its title. `c` collapses or expands only the selected section (`GPU LIST` cannot be collapsed). Section order lasts for the current TUI session. When the terminal supports SGR mouse input, click `▲`/`▼` before a title to move that section up or down, and the right triangle to collapse or expand it.
 
 ## Disk display
 
