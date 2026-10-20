@@ -3645,7 +3645,7 @@ static void handle_key(unsigned char key, UiState *ui, bool *paused, bool *help_
             DashboardSection *section = &ui->sections[ui->selected_section];
             if (section->type == SECTION_GPU_LIST) {
                 snprintf(ui->section_notice, sizeof(ui->section_notice),
-                         "ERROR: GPU LIST cannot be folded");
+                         "- ERROR: GPU LIST cannot be folded");
                 ui->section_notice_until = monotonic_seconds() + 2.5;
             } else {
                 toggle_dashboard_section(section, ui);
