@@ -2748,8 +2748,16 @@ static void move_process_selection(UiState *ui, const GpuInfo *gpus, int gpu_cou
     }
 }
 
+/* Reserve space for other panels and the footer even on hosts with many veth/tap devices. */
+#define MAX_NETWORK_DISPLAY_LINES 5
+
+static int displayed_network_lines(int interface_count) {
+    int lines = interface_count > 0 ? interface_count : 1;
+    return lines > MAX_NETWORK_DISPLAY_LINES ? MAX_NETWORK_DISPLAY_LINES : lines;
+}
+
 static int network_line_count(const NetworkInfo *network) {
-    return network->interface_count > 0 ? network->interface_count : 1;
+    return displayed_network_lines(network->interface_count);
 }
 
 static int network_graph_rows(int line_count) {
@@ -2758,7 +2766,7 @@ static int network_graph_rows(int line_count) {
 }
 
 static int system_content_rows(int interface_count, bool collapsed) {
-    int line_count = interface_count > 0 ? interface_count : 1;
+    int line_count = displayed_network_lines(interface_count);
     if (collapsed) return line_count;
     int graph_rows = network_graph_rows(line_count);
     int network_rows = line_count + (graph_rows > 0 ? 1 : 0);
@@ -2921,6 +2929,11 @@ static void draw_system(Screen *screen, int top, const SystemInfo *system,
         screen_put_attr(screen, top, disk_left, disk_summary, disk_width,
                         disk && disk->capacity_valid ? ATTR_TEXT_GREEN : ATTR_DIM);
         for (int i = 0; i < line_count; i++) {
+            if (network->interface_count > line_count && i == line_count - 1) {
+                screen_putf(screen, top + i, network_left, right_width,
+                            "+%d interfaces (see web)", network->interface_count - i);
+                break;
+            }
             const NetworkInterfaceInfo *interface = network->interface_count > 0
                                                          ? &network->interfaces[i]
                                                          : NULL;
@@ -2933,6 +2946,11 @@ static void draw_system(Screen *screen, int top, const SystemInfo *system,
     draw_disk_plot(screen, top, disk_left, disk_width, disk_history,
                    disk_title, disk_info);
     for (int i = 0; i < line_count; i++) {
+        if (network->interface_count > line_count && i == line_count - 1) {
+            screen_putf(screen, top + i, network_left, right_width,
+                        "+%d interfaces (see web)", network->interface_count - i);
+            break;
+        }
         const NetworkInterfaceInfo *interface = network->interface_count > 0
                                                      ? &network->interfaces[i]
                                                      : NULL;
@@ -3114,6 +3132,13 @@ static void draw_form_field(Screen *screen, int row, int start, int width,
 static void draw_monitor_form(Screen *screen, UiState *ui) {
     MonitorFormLayout layout;
     if (!monitor_form_layout(screen, &layout)) return;
+    /* Content from a tall section must never bleed through the fixed footer. */
+    memset(screen->cells + (size_t)layout.row * screen->cols, ' ', (size_t)screen->cols);
+    memset(screen->attrs + (size_t)layout.row * screen->cols, ATTR_NORMAL, (size_t)screen->cols);
+    size_t kept = 0;
+    for (size_t i = 0; i < screen->overlay_count; i++)
+        if (screen->overlays[i].row != layout.row) screen->overlays[kept++] = screen->overlays[i];
+    screen->overlay_count = kept;
     screen_put_attr(screen, layout.row, 0, "REMOTE:", 9, ATTR_CYAN_BOLD);
     draw_form_field(screen, layout.row, layout.address_start, layout.address_width,
                     ui->monitor_input, "host:port",
@@ -3269,8 +3294,12 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
                 int right_left = left_width + gap;
                 int right_width = screen->cols - right_left;
                 char memory_title[64], gpu_title[64];
-                snprintf(memory_title, sizeof(memory_title), "GPU MEM AVG(%.1f%%) [30s|10s|3s|1s]", memory_average);
-                snprintf(gpu_title, sizeof(gpu_title), "GPU AVG(%.1f%%) [30s|10s|3s|1s]", gpu_average);
+                if (memory_count)
+                    snprintf(memory_title, sizeof(memory_title), "GPU MEM AVG(%.1f%%) [30s|10s|3s|1s]", memory_average);
+                else snprintf(memory_title, sizeof(memory_title), "GPU MEM AVG(N/A) [30s|10s|3s|1s]");
+                if (gpu_count_valid)
+                    snprintf(gpu_title, sizeof(gpu_title), "GPU AVG(%.1f%%) [30s|10s|3s|1s]", gpu_average);
+                else snprintf(gpu_title, sizeof(gpu_title), "GPU AVG(N/A) [30s|10s|3s|1s]");
                 draw_plot(screen, y, 0, left_width, view->vram_history, memory_title, NULL, NULL);
                 draw_plot(screen, y, right_left, right_width, view->gpu_history, gpu_title, NULL, NULL);
                 y += 2 + GRAPH_ROWS;
