@@ -16,7 +16,7 @@ SUDO_AUTH_FAILED=0
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--prefix DIR|--bindir DIR] [--backend auto|nvidia|vulkan|both]
+Usage: install.sh [--prefix DIR|--bindir DIR] [--backend auto|none|nvidia|vulkan|both]
 
 Downloads a fresh source archive from the selected channel, builds it, and
 updates the installed executable. The default channel is the latest main commit.
@@ -72,7 +72,7 @@ while [ $# -gt 0 ]; do
 done
 
 case $BACKEND in
-    auto|nvidia|vulkan|both) ;;
+    auto|none|nvidia|vulkan|both) ;;
     *) printf 'Invalid backend: %s\n' "$BACKEND" >&2; exit 2 ;;
 esac
 case $SOURCE in

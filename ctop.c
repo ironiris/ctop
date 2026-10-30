@@ -5645,10 +5645,7 @@ int main(int argc, char **argv) {
     char nvml_error[256] = "";
     if (!initialize_nvml_backend(nvml_error, sizeof(nvml_error))) {
         debug_log("%s", nvml_error);
-#if !defined(CTOP_ENABLE_VULKAN)
-        fprintf(stderr, "%s\n", nvml_error);
-        return 1;
-#endif
+        fprintf(stderr, "GPU monitoring unavailable: %s\n", nvml_error);
     } else {
         debug_log("NVML initialized");
         if (nvml_api.system_get_driver_version)

@@ -31,7 +31,7 @@ A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, 
 - Vulkan backend: Vulkan headers and the loader development library
 - Standard glibc, `libdl`, and `libm` libraries
 
-The default `auto` build selects NVIDIA, Vulkan, or both backends based on the installed development files. Select one explicitly with `--backend nvidia|vulkan|both`. Set `NVML_INCLUDE_DIR`/`CUDA_ROOT` or `VULKAN_INCLUDE_DIR` to specify header locations; `VULKAN_LIBRARY_DIR` can specify the Vulkan loader library directory.
+The default `auto` build selects NVIDIA, Vulkan, or both backends based on installed development files, and builds without GPU support if none are available. Select a backend explicitly with `--backend none|nvidia|vulkan|both`. CPU, memory, disk and network monitoring remains available when GPUs are absent or initialization fails. Set `NVML_INCLUDE_DIR`/`CUDA_ROOT` or `VULKAN_INCLUDE_DIR` to specify header locations; `VULKAN_LIBRARY_DIR` can specify the Vulkan loader library directory.
 
 Check dependencies without compiling:
 
@@ -105,6 +105,7 @@ Backends are selected automatically, or can be chosen explicitly:
 
 ```bash
 ./build-ctop.sh --backend auto
+./build-ctop.sh --backend none  # build without GPU support
 ./build-ctop.sh --backend nvidia
 ./build-ctop.sh --backend vulkan
 ./build-ctop.sh --backend both

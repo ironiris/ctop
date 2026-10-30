@@ -12,11 +12,11 @@ VULKAN_LIBRARY_DIR=${VULKAN_LIBRARY_DIR:-}
 
 usage() {
     cat <<'EOF'
-Usage: ./build-ctop.sh [--backend auto|nvidia|vulkan|both] [--check] [-h|--help]
+Usage: ./build-ctop.sh [--backend auto|none|nvidia|vulkan|both] [--check] [-h|--help]
 
 Builds ctop with the web dashboard assets embedded.
 
-  --backend NAME   choose GPU backend; auto selects all available backends
+  --backend NAME   choose GPU backend; auto uses available backends or none
   --check          verify compiler and selected backend dependencies, then exit
   -h, --help       show this help
 
@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
 done
 
 case $BACKEND in
-    auto|nvidia|vulkan|both) ;;
+    auto|none|nvidia|vulkan|both) ;;
     *) printf 'unknown backend: %s\n\n' "$BACKEND" >&2; usage >&2; exit 2 ;;
 esac
 
@@ -131,10 +131,11 @@ case $BACKEND in
         elif [ "$VULKAN_FOUND" -eq 1 ]; then
             SELECTED_BACKEND=vulkan
         else
-            echo "No GPU backend development files found (need nvml.h or Vulkan headers and loader)." >&2
-            exit 1
+            echo "No GPU development files found; building without GPU support." >&2
+            SELECTED_BACKEND=none
         fi
         ;;
+    none) SELECTED_BACKEND=none ;;
     nvidia)
         if [ "$NVML_FOUND" -ne 1 ]; then
             echo "nvml.h was not found. Set NVML_INCLUDE_DIR or CUDA_ROOT." >&2
@@ -226,7 +227,7 @@ case $SELECTED_BACKEND in
             gcc "$@" "$ROOT/ctop.c" -ldl -lm -lvulkan -o "$ROOT/ctop"
         fi
         ;;
-    nvidia)
+    nvidia|none)
         gcc "$@" "$ROOT/ctop.c" -ldl -lm -o "$ROOT/ctop"
         ;;
 esac

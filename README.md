@@ -34,7 +34,7 @@ C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 �
 - Vulkan 백엔드에는 Vulkan 헤더와 loader 개발 라이브러리
 - 기본 glibc, `libdl`, `libm`
 
-기본 `auto` 빌드는 설치된 개발 파일에 따라 NVIDIA, Vulkan 또는 두 백엔드를 선택합니다. `--backend nvidia|vulkan|both`로 직접 선택할 수도 있습니다. 헤더 경로는 `NVML_INCLUDE_DIR`/`CUDA_ROOT`, `VULKAN_INCLUDE_DIR`로 지정할 수 있으며, Vulkan loader 경로는 `VULKAN_LIBRARY_DIR`로 지정할 수 있습니다.
+기본 `auto` 빌드는 설치된 개발 파일에 따라 NVIDIA, Vulkan 또는 두 백엔드를 선택하며, GPU 개발 파일이 없으면 GPU 지원 없이 빌드합니다. `--backend none|nvidia|vulkan|both`로 직접 선택할 수도 있습니다. GPU가 없거나 초기화에 실패해도 CPU·메모리·디스크·네트워크 모니터링은 사용할 수 있습니다. 헤더 경로는 `NVML_INCLUDE_DIR`/`CUDA_ROOT`, `VULKAN_INCLUDE_DIR`로 지정할 수 있으며, Vulkan loader 경로는 `VULKAN_LIBRARY_DIR`로 지정할 수 있습니다.
 
 의존성만 확인하려면:
 
@@ -116,6 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/ironiris/ctop/main/install.sh | sh 
 
 ```bash
 ./build-ctop.sh --backend auto
+./build-ctop.sh --backend none  # GPU 지원 없이 빌드
 ./build-ctop.sh --backend nvidia
 ./build-ctop.sh --backend vulkan
 ./build-ctop.sh --backend both
