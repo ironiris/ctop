@@ -1676,10 +1676,33 @@ static NetworkPrevious *find_network_previous(const char *name) {
 }
 
 static bool ignored_network_interface(const char *name) {
-    return strcmp(name, "lo") == 0 ||
-           strncmp(name, "docker", 6) == 0 ||
-           strncmp(name, "br-", 3) == 0 ||
-           strncmp(name, "veth", 4) == 0;
+    if (strcmp(name, "lo") == 0) return true;
+    const char *include_virtual = getenv("CTOP_INCLUDE_VIRTUAL_NET");
+    if (include_virtual && strcmp(include_virtual, "1") == 0) return false;
+
+    /* sysfs identifies virtual interfaces independently of vendor naming. */
+    char path[PATH_MAX], resolved[PATH_MAX];
+    int length = snprintf(path, sizeof(path), "/sys/class/net/%s", name);
+    if (length > 0 && (size_t)length < sizeof(path) && realpath(path, resolved))
+        return strncmp(resolved, "/sys/devices/virtual/net/", 25) == 0;
+
+    /* Conservative fallback when sysfs is unavailable. */
+    return strncmp(name, "docker", 6) == 0 || strncmp(name, "br-", 3) == 0 ||
+           strncmp(name, "veth", 4) == 0 || strncmp(name, "vmbr", 4) == 0 ||
+           strncmp(name, "tap", 3) == 0 || strncmp(name, "fwbr", 4) == 0 ||
+           strncmp(name, "fwpr", 4) == 0 || strncmp(name, "fwln", 4) == 0;
+}
+
+static bool network_link_down(const char *name) {
+    char path[PATH_MAX], state[32];
+    int length = snprintf(path, sizeof(path), "/sys/class/net/%s/operstate", name);
+    if (length < 0 || (size_t)length >= sizeof(path)) return false;
+    FILE *file = fopen(path, "r");
+    if (!file) return false; /* 알 수 없는 상태는 숨기지 않는다. */
+    bool down = fscanf(file, "%31s", state) == 1 &&
+                (strcmp(state, "down") == 0 || strcmp(state, "lowerlayerdown") == 0);
+    fclose(file);
+    return down;
 }
 
 static bool read_network_capacity(const char *name, double *capacity_bps) {
@@ -1713,6 +1736,12 @@ static bool read_network_info(NetworkInfo *network) {
                             " %63[^:]: %llu %*s %*s %*s %*s %*s %*s %llu",
                             interface, &rx_bytes, &tx_bytes);
         if (fields != 3 || ignored_network_interface(interface)) continue;
+        if (network_link_down(interface)) {
+            for (size_t i = 0; i < network_previous_count; i++)
+                if (strcmp(network_previous[i].name, interface) == 0)
+                    network_previous[i].valid = false;
+            continue;
+        }
         if (network->interface_count >= MAX_NETWORK_INTERFACES) continue;
 
         NetworkInterfaceInfo *current = &network->interfaces[network->interface_count++];

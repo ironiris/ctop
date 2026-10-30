@@ -31,6 +31,8 @@ A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, 
 - Vulkan backend: Vulkan headers and the loader development library
 - Standard glibc, `libdl`, and `libm` libraries
 
+Network monitoring excludes loopback, virtual interfaces (including bridges, tap and veth), and interfaces whose links are down, according to Linux sysfs. Interfaces with unknown status or speed remain visible. Set `CTOP_INCLUDE_VIRTUAL_NET=1` to include virtual interfaces. This also affects network totals, graphs and the web API. Containers may require the option if no physical interfaces are visible.
+
 The default `auto` build selects NVIDIA, Vulkan, or both backends based on installed development files, and builds without GPU support if none are available. Select a backend explicitly with `--backend none|nvidia|vulkan|both`. CPU, memory, disk and network monitoring remains available when GPUs are absent or initialization fails. Set `NVML_INCLUDE_DIR`/`CUDA_ROOT` or `VULKAN_INCLUDE_DIR` to specify header locations; `VULKAN_LIBRARY_DIR` can specify the Vulkan loader library directory.
 
 Check dependencies without compiling:
