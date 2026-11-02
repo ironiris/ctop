@@ -41,7 +41,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.4.6"
+#define CTOP_VERSION "0.4.7"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -2700,7 +2700,7 @@ static int dashboard_section_height(const DashboardSection *section, const UiSta
 static bool process_at_screen_row(int y, int gpu_count, const UiState *ui,
                                   const GpuInfo *gpus, const MonitorView *views,
                                   int view_count, int *gpu_index, size_t *process_index) {
-    int row = y - 3;
+    int row = y - 2;
     for (size_t s = 0; s < ui->section_count; s++) {
         const DashboardSection *section = &ui->sections[s];
         int height = dashboard_section_height(section, ui, gpus, gpu_count, views, view_count);
@@ -3050,35 +3050,45 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
     localtime_r(&now, &local_time);
     char time_text[64];
     strftime(time_text, sizeof(time_text), "%a %b %d %H:%M:%S %Y", &local_time);
-    if (active_web_port && active_web_url[0]) {
-        screen_put_attr(screen, 0, 0, time_text, (int)strlen(time_text), ATTR_CYAN);
-        char web_address[128];
-        snprintf(web_address, sizeof(web_address), "Web monitor: %s", active_web_url);
-        int address_length = (int)strlen(web_address);
-        if (address_length < screen->cols)
-            screen_put_attr(screen, 0, screen->cols - address_length, web_address,
-                            address_length, ATTR_NORMAL);
-    } else {
-        screen_putf_attr(screen, 0, 0, screen->cols, ATTR_CYAN,
-                         "%s  (Press h for help or q to quit)", time_text);
-    }
-    char cuda_api[32];
+    char cuda_api[32], title[512], right[256];
     format_cuda_api(cuda_api, sizeof(cuda_api), cuda_driver);
     if (strcmp(cuda_runtime, "N/A") != 0)
-        screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD,
-                         "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s",
-                         CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api);
+        snprintf(title, sizeof(title),
+                 "ctop %s  |  Driver %s  |  CUDA lib %s (runtime %s)  |  Driver API %s",
+                 CTOP_VERSION, driver, cuda_library, cuda_runtime, cuda_api);
     else
-        screen_putf_attr(screen, 1, 0, screen->cols, ATTR_CYAN_BOLD,
-                         "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s",
-                         CTOP_VERSION, driver, cuda_library, cuda_api);
+        snprintf(title, sizeof(title),
+                 "ctop %s  |  Driver %s  |  CUDA lib %s  |  Driver API %s",
+                 CTOP_VERSION, driver, cuda_library, cuda_api);
+    snprintf(right, sizeof(right), "%s  (Press h for help or q to quit)", time_text);
+    int right_length = (int)strlen(right);
+    int title_length = (int)strlen(title);
+    if (title_length + 2 + right_length > screen->cols) {
+        snprintf(right, sizeof(right), "%s", time_text);
+        right_length = (int)strlen(right);
+    }
+    int title_width = screen->cols;
+    if (right_length + 2 < screen->cols) title_width = screen->cols - right_length - 2;
+    screen_put_attr(screen, 0, 0, title, title_width, ATTR_CYAN_BOLD);
+    if (title_width != screen->cols)
+        screen_put_attr(screen, 0, screen->cols - right_length, right, right_length, ATTR_CYAN);
 
     ui->click_target_count = 0;
     char controls[256];
     snprintf(controls, sizeof(controls),
              "%s %.1fs | q quit h help a monitor [ ] select(>) u/d move x remove c fold selected g GPU m SYS space pause +/- rate r reset j next k kill",
              paused ? "PAUSED" : "LIVE", interval);
-    screen_put_attr(screen, 2, 0, controls, screen->cols, ATTR_DIM);
+    int controls_width = screen->cols;
+    if (active_web_port && active_web_url[0]) {
+        char address[160];
+        snprintf(address, sizeof(address), "Web: %s", active_web_url);
+        int address_length = (int)strlen(address);
+        if (address_length + 2 < screen->cols) {
+            controls_width = screen->cols - address_length - 2;
+            screen_put_attr(screen, 1, screen->cols - address_length, address, address_length, ATTR_NORMAL);
+        }
+    }
+    screen_put_attr(screen, 1, 0, controls, controls_width, ATTR_DIM);
     const struct { const char *label; unsigned char key; int offset; } hits[] = {
         {"q quit", 'q', 0}, {"h help", 'h', 0}, {"a monitor", 'a', 0},
         {"[ ] select", '[', 0}, {"[ ] select", ']', 2},
@@ -3093,7 +3103,8 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
             const char *hit = strstr(controls, hits[i].label);
             if (hit) {
                 int col = (int)(hit - controls) + hits[i].offset;
-                add_click_target(ui, 2, col, col + 1, hits[i].key);
+                if (col < controls_width)
+                    add_click_target(ui, 1, col, col + 1, hits[i].key);
             }
         }
     }
@@ -3251,7 +3262,7 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
         return;
     }
 
-    int y = 3;
+    int y = 2;
     for (size_t i = 0; i < ui->section_count; i++) {
         const DashboardSection *section = &ui->sections[i];
         int section_start = y;
@@ -3436,7 +3447,7 @@ static bool terminal_size(int *rows, int *cols) {
 static void toggle_mouse_at(UiState *ui, int x, int y, int cols,
                             const GpuInfo *gpus, int gpu_count) {
     if (x < cols - 6) return;
-    int row = 3;
+    int row = 2;
     for (size_t i = 0; i < ui->section_count; i++) {
         DashboardSection *section = &ui->sections[i];
         if (row == y && section->type != SECTION_GPU_LIST) {
