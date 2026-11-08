@@ -390,8 +390,8 @@ function renderGpuRows() {
       <td class="mono">${power}</td><td class="mono">${vram}</td>
       <td class="num mono">${gpuPercent === null ? "—" : percent(gpuPercent)}</td>
       <td class="gpu-meter-cell"><div class="gpu-usage-meter" role="img" aria-label="GPU MEM ${vramPercent === null ? "unavailable" : percent(vramPercent)}, GPU ${gpuPercent === null ? "unavailable" : percent(gpuPercent)}">
-        <div class="gpu-meter-half vram-meter"><span style="width:${vramWidth}%"></span></div><div class="gpu-meter-divider"></div>
-        <div class="gpu-meter-half gpu-meter"><span style="width:${gpuWidth}%"></span></div></div></td></tr>`;
+        <div class="gpu-meter-half vram-meter"><span style="--fill:${vramWidth}%"></span></div><div class="gpu-meter-divider"></div>
+        <div class="gpu-meter-half gpu-meter"><span style="--fill:${gpuWidth}%"></span></div></div></td></tr>`;
   }).join("");
 }
 

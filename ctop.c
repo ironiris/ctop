@@ -41,7 +41,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.4.7"
+#define CTOP_VERSION "0.4.8"
 #define GRAPH_ROWS 5
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
@@ -78,6 +78,15 @@ enum {
     ATTR_RED,
     ATTR_SELECTED,
     ATTR_PROMPT,
+    ATTR_GRADIENT_0,
+    ATTR_GRADIENT_1,
+    ATTR_GRADIENT_2,
+    ATTR_GRADIENT_3,
+    ATTR_GRADIENT_4,
+    ATTR_GRADIENT_5,
+    ATTR_GRADIENT_6,
+    ATTR_GRADIENT_7,
+    ATTR_GRADIENT_8,
 };
 
 static bool color_enabled = true;
@@ -2082,6 +2091,15 @@ static const char *ansi_for_attr(unsigned char attr) {
         case ATTR_RED: return "\033[1;31m";
         case ATTR_SELECTED: return "\033[7;1;36m";
         case ATTR_PROMPT: return "\033[7;1;33m";
+        case ATTR_GRADIENT_0: return "\033[38;5;46m";
+        case ATTR_GRADIENT_1: return "\033[38;5;118m";
+        case ATTR_GRADIENT_2: return "\033[38;5;154m";
+        case ATTR_GRADIENT_3: return "\033[38;5;190m";
+        case ATTR_GRADIENT_4: return "\033[38;5;226m";
+        case ATTR_GRADIENT_5: return "\033[38;5;214m";
+        case ATTR_GRADIENT_6: return "\033[38;5;208m";
+        case ATTR_GRADIENT_7: return "\033[38;5;202m";
+        case ATTR_GRADIENT_8: return "\033[38;5;196m";
         default: return "\033[0m";
     }
 }
@@ -2091,6 +2109,15 @@ static unsigned char load_attr(double value) {
     if (value >= 95.0) return ATTR_RED;
     if (value >= 80.0) return ATTR_YELLOW;
     return ATTR_GREEN;
+}
+
+static unsigned char gradient_attr(int position, int width) {
+    const int steps = 9;
+    if (width <= 1) return ATTR_GRADIENT_0;
+    if (position < 0) position = 0;
+    if (position >= width) position = width - 1;
+    int step = position * (steps - 1) / (width - 1);
+    return (unsigned char)(ATTR_GRADIENT_0 + step);
 }
 
 static unsigned char threshold_attr_value(double value, bool valid, double warning, double critical) {
@@ -2321,7 +2348,7 @@ typedef enum {
 static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
                                    const History *history, int graph_rows,
                                    double maximum, GraphAxis axis_type,
-                                   const char *footer_label) {
+                                   bool gradient_by_level, const char *footer_label) {
     /* Use one common Y-axis width so all four graph plots have the same
        horizontal geometry. */
     int label_width = 8;
@@ -2372,13 +2399,19 @@ static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
         if (full_rows > graph_rows) full_rows = graph_rows;
         unsigned char attr = load_attr(normalized * 100.0);
 
-        for (int filled = 0; filled < full_rows; filled++)
-            screen_overlay(screen, bottom_row - filled, plot_left + x, "█", attr);
+        for (int filled = 0; filled < full_rows; filled++) {
+            unsigned char row_attr = gradient_by_level ? gradient_attr(filled, graph_rows) : attr;
+            screen_overlay(screen, bottom_row - filled, plot_left + x, "█", row_attr);
+        }
         if (full_rows < graph_rows) {
             int glyph_index = (int)llround(fraction * 8.0);
-            if (glyph_index > 0)
+            if (glyph_index > 0) {
+                unsigned char row_attr = gradient_by_level
+                                             ? gradient_attr(full_rows, graph_rows)
+                                             : attr;
                 screen_overlay(screen, bottom_row - full_rows, plot_left + x,
-                               BLOCK_GLYPHS[glyph_index], attr);
+                               BLOCK_GLYPHS[glyph_index], row_attr);
+            }
         }
     }
     int footer = top + graph_rows;
@@ -2409,7 +2442,8 @@ static void draw_plot_graph_scaled(Screen *screen, int top, int left, int width,
 
 static void draw_plot(Screen *screen, int top, int left, int width,
                       const History *history, const char *title,
-                      const char *title_info, const char *footer_label) {
+                      const char *title_info, const char *footer_label,
+                      bool gradient_by_level) {
     if (width < 12) {
         screen_put_attr(screen, top, left, title, width, ATTR_CYAN_BOLD);
         screen_put_attr(screen, top + 1, left, "terminal too narrow", width, ATTR_DIM);
@@ -2423,7 +2457,7 @@ static void draw_plot(Screen *screen, int top, int left, int width,
                             width - title_length - 1, ATTR_TEXT_GREEN);
     }
     draw_plot_graph_scaled(screen, top + 1, left, width, history, GRAPH_ROWS,
-                           100.0, GRAPH_AXIS_PERCENT, footer_label);
+                           100.0, GRAPH_AXIS_PERCENT, gradient_by_level, footer_label);
 }
 
 static void draw_disk_plot(Screen *screen, int top, int left, int width,
@@ -2442,7 +2476,7 @@ static void draw_disk_plot(Screen *screen, int top, int left, int width,
                             width - title_length - 1, ATTR_TEXT_GREEN);
     }
     draw_plot_graph_scaled(screen, top + 1, left, width, history, GRAPH_ROWS,
-                           history_peak_400(history), GRAPH_AXIS_DISK_RATE, "I/O Spd");
+                           history_peak_400(history), GRAPH_AXIS_DISK_RATE, false, "I/O Spd");
 }
 
 static void draw_load_bar(Screen *screen, int row, int start, double memory, double gpu) {
@@ -2459,9 +2493,6 @@ static void draw_load_bar(Screen *screen, int row, int start, double memory, dou
     if (gpu > 0.0 && gpu_cells == 0) gpu_cells = 1;
     if (memory < 100.0 && memory_cells >= left_width) memory_cells = left_width - 1;
     if (gpu < 100.0 && gpu_cells >= right_width) gpu_cells = right_width - 1;
-    unsigned char memory_attr = load_attr(memory);
-    unsigned char gpu_attr = load_attr(gpu);
-
     int divider = start + 2 + left_width;
     screen_ch_attr(screen, row, start, '[', ATTR_DIM);
     screen_ch_attr(screen, row, start + 1 + left_width, ']', ATTR_NORMAL);
@@ -2472,14 +2503,16 @@ static void draw_load_bar(Screen *screen, int row, int start, double memory, dou
     for (int i = 0; i < left_width; i++) {
         bool filled = i >= left_width - memory_cells;
         if (filled)
-            screen_overlay(screen, row, start + 1 + i, "\xE2\x96\x88", memory_attr);
+            screen_overlay(screen, row, start + 1 + i, "\xE2\x96\x88",
+                           gradient_attr(left_width - 1 - i, left_width));
         else
             screen_ch_attr(screen, row, start + 1 + i, ' ', ATTR_NORMAL);
     }
     for (int i = 0; i < right_width; i++) {
         bool filled = i < gpu_cells;
         if (filled)
-            screen_overlay(screen, row, divider + 2 + i, "\xE2\x96\x88", gpu_attr);
+            screen_overlay(screen, row, divider + 2 + i, "\xE2\x96\x88",
+                           gradient_attr(i, right_width));
         else
             screen_ch_attr(screen, row, divider + 2 + i, ' ', ATTR_NORMAL);
     }
@@ -2898,7 +2931,7 @@ static void draw_network_line(Screen *screen, int row, int left, int width,
 static void draw_network_graph(Screen *screen, int top, int left, int width,
                                const History *history, int graph_rows) {
     draw_plot_graph_scaled(screen, top, left, width, history, graph_rows,
-                           history_peak_400(history), GRAPH_AXIS_NETWORK_RATE, "bps");
+                           history_peak_400(history), GRAPH_AXIS_NETWORK_RATE, false, "bps");
 }
 
 static void draw_system(Screen *screen, int top, const SystemInfo *system,
@@ -2970,8 +3003,8 @@ static void draw_system(Screen *screen, int top, const SystemInfo *system,
         }
         return;
     }
-    draw_plot(screen, top, 0, left_width, ram, ram_title, ram_info, "%");
-    draw_plot(screen, top, middle_left, middle_width, swap, swap_title, swap_info, "%");
+    draw_plot(screen, top, 0, left_width, ram, ram_title, ram_info, "%", false);
+    draw_plot(screen, top, middle_left, middle_width, swap, swap_title, swap_info, "%", false);
     draw_disk_plot(screen, top, disk_left, disk_width, disk_history,
                    disk_title, disk_info);
     for (int i = 0; i < line_count; i++) {
@@ -3340,8 +3373,8 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
                 if (gpu_count_valid)
                     snprintf(gpu_title, sizeof(gpu_title), "GPU AVG(%.1f%%) [30s|10s|3s|1s]", gpu_average);
                 else snprintf(gpu_title, sizeof(gpu_title), "GPU AVG(N/A) [30s|10s|3s|1s]");
-                draw_plot(screen, y, 0, left_width, view->vram_history, memory_title, NULL, NULL);
-                draw_plot(screen, y, right_left, right_width, view->gpu_history, gpu_title, NULL, NULL);
+                draw_plot(screen, y, 0, left_width, view->vram_history, memory_title, NULL, NULL, true);
+                draw_plot(screen, y, right_left, right_width, view->gpu_history, gpu_title, NULL, NULL, true);
                 y += 2 + GRAPH_ROWS;
             }
         } else if (section->type == SECTION_SYSTEM) {
