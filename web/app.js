@@ -380,7 +380,9 @@ function renderCpuGrid(source) {
       if (index >= cores.length) { html += "<td></td>"; continue; }
       const usage = Math.max(0, Math.min(100, Number(cores[index]) || 0));
       const hue = Math.round(120 * (1 - usage / 100));
-      html += `<td style="color:hsl(${hue} 100% 42%)">${Math.round(usage)}</td>`;
+      const indexLabel = hex ? index.toString(16).toUpperCase().padStart(2, "0")
+                             : String(index).padStart(2, "0");
+      html += `<td><span class="cpu-cell-index">${indexLabel}</span> <span class="cpu-cell-usage" style="color:hsl(${hue} 100% 42%)">${Math.round(usage)}%</span></td>`;
     }
     html += "</tr>";
   }
