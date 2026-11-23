@@ -368,13 +368,9 @@ function renderCpuGrid(source) {
     return;
   }
   const columns = Math.ceil(count / 5);
-  const labels = Array.from({length: columns}, (_, x) => {
-    const value = x * 5;
-    return hex ? value.toString(16).toUpperCase().padStart(2, "0") : String(value).padStart(2, "0");
-  });
-  let html = `<table class="cpu-grid-table"><thead><tr><th></th>${labels.map((label) => `<th>${label}</th>`).join("")}</tr></thead><tbody>`;
+  let html = `<table class="cpu-grid-table"><tbody>`;
   for (let y = 0; y < 5; y++) {
-    html += `<tr><th>${y}</th>`;
+    html += `<tr>`;
     for (let x = 0; x < columns; x++) {
       const index = x * 5 + y;
       if (index >= cores.length) { html += "<td></td>"; continue; }
