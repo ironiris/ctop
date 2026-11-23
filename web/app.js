@@ -290,7 +290,7 @@ function monitorData(source, kind) {
           <div class="x-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
         </article>
       </div></div>
-      <article class="metric-card cpu-grid-card"><div class="metric-head"><span class="metric-label">CPU utilization <span class="cpu-grid-hint">(CPU index = X + Y)</span></span>
+      <article class="metric-card cpu-grid-card"><div class="metric-head"><span class="metric-label">CPU utilization</span>
         <button type="button" class="cpu-format-button" data-cpu-format-toggle data-core-count="0" id="${base}-cpu-format" aria-label="Toggle DEC/HEX CPU labels" title="Toggle DEC/HEX CPU labels">[DEC]</button></div>
         <div id="${base}-cpu-grid" class="cpu-grid-body">Waiting for CPU metrics…</div></article>
       </section>`;
