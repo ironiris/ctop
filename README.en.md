@@ -16,7 +16,7 @@ A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, 
 - RAM and SWAP usage with history graphs
 - Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
 - GPU memory and utilization history graphs
-- Per-core CPU utilization grid in the GPU & CPU section (local and remote monitors)
+- Per-core CPU utilization grid in the TUI and web dashboard GPU & CPU sections (local and remote monitors)
 - Network throughput in bit/s with per-interface link-speed utilization
 - RX/TX indicators and per-interface network rows
 - Docker-related interfaces (`docker*`, `br-*`, and `veth*`) excluded from host network totals
@@ -203,7 +203,7 @@ Use `[ / ]` to move between sections; the currently selected section is marked w
 
 The right half of the `GPU & CPU` section shows a five-row grid of per-core CPU utilization. Columns are separated by vertical rules; each cell contains a single utilization percentage. A cell's CPU index is `X (column label) + Y (row label)`, with Y running from `0` to `4` top to bottom and X stepping by 5 cores. For example, column `05` row `2` is CPU 7. The numbers use the same gradient as the graphs and are colored by the **utilization value** (e.g. 10% green, 90% red). The grid shows only the columns needed for the actual core count and widens cells to fill any leftover space.
 
-The X label format defaults to the core count: decimal (`00, 05, 10, …`) for 99 cores or fewer, hexadecimal (`00, 05, 0A, …`) for 100 or more. Click the `[DEC]`/`[HEX]` button in the title or press `v` to override it manually. Remote monitor sections use the same grid and read the remote ctop `cpu.cores` API values.
+The X label format defaults to the core count: decimal (`00, 05, 10, …`) for 99 cores or fewer, hexadecimal (`00, 05, 0A, …`) for 100 or more. Click the `[DEC]`/`[HEX]` button in the title or press `v` to override it manually. Remote monitor sections use the same grid and read the remote ctop `cpu.cores` API values. The web dashboard's GPU section shows the same grid with a `[DEC]`/`[HEX]` button; the choice is saved in the browser.
 
 ## Disk display
 

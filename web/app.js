@@ -260,7 +260,12 @@ let lastMigrationAttempt = 0;
 let migrationRunning = false;
 let remoteSharingProtected = false;
 let renderedSourceLayout = "";
+let cpuGridMode = "auto";
 let tokenRedeemed = false;
+try {
+  const savedCpuGridMode = localStorage.getItem("ctop-cpu-grid-mode");
+  if (savedCpuGridMode === "dec" || savedCpuGridMode === "hex") cpuGridMode = savedCpuGridMode;
+} catch (_) {}
 let pollTimer = null;
 let pollRunning = false;
 let pollAgain = false;
@@ -284,7 +289,11 @@ function monitorData(source, kind) {
           <div class="chart-wrap"><div id="${base}-gpu-axis" class="y-axis"></div><svg id="${base}-gpu-chart" class="chart" viewBox="0 0 640 84" preserveAspectRatio="none" aria-label="${esc(source.prefix)} GPU utilization history"></svg></div>
           <div class="x-axis"><span>-400s</span><span>-120s</span><span>-30s</span><span>-10s</span><span>now</span></div>
         </article>
-      </div></div></section>`;
+      </div></div>
+      <article class="metric-card cpu-grid-card"><div class="metric-head"><span class="metric-label">CPU utilization <span class="cpu-grid-hint">(CPU index = X + Y)</span></span>
+        <button type="button" class="cpu-format-button" data-cpu-format-toggle data-core-count="0" id="${base}-cpu-format" aria-label="Toggle DEC/HEX CPU labels" title="Toggle DEC/HEX CPU labels">[DEC]</button></div>
+        <div id="${base}-cpu-grid" class="cpu-grid-body">Waiting for CPU metrics…</div></article>
+      </section>`;
   }
   if (kind === "process") {
     const collapsed = source.processCollapsed;
@@ -336,6 +345,48 @@ function renderSourceGroups() {
   }
   updateDashboardOrderButtons();
 }
+function cpuGridIsHex(coreCount) {
+  if (cpuGridMode === "hex") return true;
+  if (cpuGridMode === "dec") return false;
+  return coreCount > 99;
+}
+
+function renderCpuGrid(source) {
+  const root = $(`${source.domId}-gpu-cpu-grid`);
+  const button = $(`${source.domId}-gpu-cpu-format`);
+  if (!root) return;
+  const cpu = source.data?.cpu || {};
+  const cores = Array.isArray(cpu.cores) ? cpu.cores : [];
+  const count = Number(cpu.count) || cores.length;
+  const hex = cpuGridIsHex(count);
+  if (button) {
+    button.textContent = `[${hex ? "HEX" : "DEC"}]`;
+    button.dataset.coreCount = String(count);
+  }
+  if (cpu.valid === false || count === 0) {
+    root.textContent = "CPU core data unavailable";
+    return;
+  }
+  const columns = Math.ceil(count / 5);
+  const labels = Array.from({length: columns}, (_, x) => {
+    const value = x * 5;
+    return hex ? value.toString(16).toUpperCase().padStart(2, "0") : String(value).padStart(2, "0");
+  });
+  let html = `<table class="cpu-grid-table"><thead><tr><th></th>${labels.map((label) => `<th>${label}</th>`).join("")}</tr></thead><tbody>`;
+  for (let y = 0; y < 5; y++) {
+    html += `<tr><th>${y}</th>`;
+    for (let x = 0; x < columns; x++) {
+      const index = x * 5 + y;
+      if (index >= cores.length) { html += "<td></td>"; continue; }
+      const usage = Math.max(0, Math.min(100, Number(cores[index]) || 0));
+      const hue = Math.round(120 * (1 - usage / 100));
+      html += `<td style="color:hsl(${hue} 100% 42%)">${Math.round(usage)}</td>`;
+    }
+    html += "</tr>";
+  }
+  root.innerHTML = `${html}</tbody></table>`;
+}
+
 function renderSourceMetrics(source) {
   const data = source.data;
   sampleIntervalSeconds = validNumber(data.sample_interval) && Number(data.sample_interval) > 0
@@ -362,6 +413,7 @@ function renderSourceMetrics(source) {
   setText(`${gpuBase}-gpu-value`, percent(data.averages?.gpu_percent));
   drawChart(`${gpuBase}-vram-chart`, `${gpuBase}-vram-axis`, history.vram, "percent", 100);
   drawChart(`${gpuBase}-gpu-chart`, `${gpuBase}-gpu-axis`, history.gpu, "percent", 100);
+  renderCpuGrid(source);
 }
 
 function renderGpuRows() {
@@ -696,6 +748,14 @@ $("monitor-list").addEventListener("click", async (event) => {
 
 const dashboardRoot = $("dashboard-sections");
 dashboardRoot.addEventListener("click", (event) => {
+  const formatButton = event.target.closest("[data-cpu-format-toggle]");
+  if (formatButton) {
+    const current = cpuGridIsHex(Number(formatButton.dataset.coreCount) || 0);
+    cpuGridMode = current ? "dec" : "hex";
+    try { localStorage.setItem("ctop-cpu-grid-mode", cpuGridMode); } catch (_) {}
+    for (const source of sources) if (source.data) renderCpuGrid(source);
+    return;
+  }
   const collapseButton = event.target.closest("[data-collapse-source]");
   if (collapseButton) {
     const source = sources.find((item) => item.id === collapseButton.dataset.collapseSource);
