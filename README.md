@@ -6,7 +6,7 @@ C11 기반 단일 C 프로그램이며 curses 라이브러리를 사용하지 �
 
 [English README](README.en.md)
 
-![ctop 터미널 화면](docs/images/ctop.png)
+![ctop 터미널 화면](docs/images/ctop-v0.5.0.png)
 
 ![ctop 웹 대시보드](docs/images/ctop_web.png)
 

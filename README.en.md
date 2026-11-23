@@ -4,7 +4,7 @@ A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, 
 
 `ctop` is a single C11 program with no curses dependency. NVIDIA data comes from NVML; AMD devices are enumerated with Vulkan and monitored through Linux `amdgpu` interfaces. When the ROCm runtime (AMD SMI) is installed, AMD metrics prefer it over sysfs.
 
-![ctop terminal UI](docs/images/ctop.png)
+![ctop terminal UI](docs/images/ctop-v0.5.0.png)
 
 ![ctop web dashboard](docs/images/ctop_web.png)
 
