@@ -41,8 +41,10 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.4.8"
+#define CTOP_VERSION "0.5.0"
 #define GRAPH_ROWS 5
+#define CPU_GRID_STEP 5
+#define MAX_CPU_CORES 512
 #define HISTORY_LIMIT 16384
 #define MAX_GPUS 32
 #define MAX_REMOTE_MONITORS 4
@@ -62,6 +64,7 @@
 #define UI_KEY_FOCUS_MONITOR 0x10
 #define UI_KEY_SUBMIT_MONITOR 0x11
 #define UI_KEY_FOCUS_TOKEN 0x12
+#define UI_KEY_CPU_FORMAT 0x13
 #define UI_KEY_MOVE_SECTION_UP_BASE 0xE0
 #define UI_KEY_MOVE_SECTION_DOWN_BASE 0xF0
 
@@ -210,6 +213,9 @@ typedef struct {
     unsigned long long swap_used;
     unsigned long long swap_total;
     double swap_percent;
+    double cpu_core_percent[MAX_CPU_CORES];
+    int cpu_core_count;
+    bool cpu_cores_valid;
 } SystemInfo;
 
 typedef struct {
@@ -270,6 +276,12 @@ typedef struct {
     bool valid;
 } CpuPrevious;
 
+typedef struct {
+    unsigned long long total_ticks;
+    unsigned long long idle_ticks;
+    bool valid;
+} CpuCoreTicks;
+
 #if defined(CTOP_ENABLE_VULKAN)
 typedef struct {
     pid_t pid;
@@ -319,6 +331,9 @@ typedef struct {
     bool usage_collapsed;
     bool system_collapsed;
     bool processes_collapsed;
+    bool cpu_grid_hex;
+    bool cpu_grid_hex_manual;
+    bool cpu_grid_hex_auto;
     int selected_gpu;
     int selected_source_id;
     pid_t selected_pid;
@@ -408,6 +423,7 @@ static CpuPrevious cpu_previous[MAX_CPU_PROCESSES];
 static size_t cpu_previous_count = 0;
 static CpuPrevious cpu_current[MAX_CPU_PROCESSES];
 static size_t cpu_current_count = 0;
+static CpuCoreTicks cpu_core_previous[MAX_CPU_CORES];
 #if defined(CTOP_ENABLE_VULKAN)
 static DrmProcessPrevious drm_process_previous[MAX_GPU_PROCESSES * MAX_GPUS];
 static size_t drm_process_previous_count;
@@ -1170,6 +1186,46 @@ static void fill_process_info(ProcessInfo *process, unsigned long long total_tic
     }
 }
 
+static void read_cpu_core_usage(SystemInfo *system) {
+    FILE *file = fopen("/proc/stat", "r");
+    if (!file) return;
+    char line[512];
+    int seen = 0;
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "cpu", 3) != 0) break;
+        if (line[3] < '0' || line[3] > '9') continue;
+        int core = -1;
+        unsigned long long values[10] = {0};
+        int count = sscanf(line,
+                           "cpu%d %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                           &core, &values[0], &values[1], &values[2], &values[3],
+                           &values[4], &values[5], &values[6], &values[7],
+                           &values[8], &values[9]);
+        if (count != 11 || core < 0 || core >= MAX_CPU_CORES) continue;
+        unsigned long long total = 0;
+        for (int i = 0; i < count - 1; i++) total += values[i];
+        /* idle includes iowait (and guest time, which Linux already accounts for). */
+        unsigned long long idle = values[3] + values[4];
+        CpuCoreTicks *previous = &cpu_core_previous[core];
+        if (previous->valid && total > previous->total_ticks) {
+            unsigned long long total_delta = total - previous->total_ticks;
+            unsigned long long idle_delta = idle > previous->idle_ticks
+                                                ? idle - previous->idle_ticks : 0;
+            if (idle_delta <= total_delta) {
+                double usage = 100.0 * (double)(total_delta - idle_delta) / (double)total_delta;
+                system->cpu_core_percent[core] = usage;
+            }
+        }
+        previous->total_ticks = total;
+        previous->idle_ticks = idle;
+        previous->valid = true;
+        if (core + 1 > seen) seen = core + 1;
+    }
+    fclose(file);
+    system->cpu_core_count = seen;
+    system->cpu_cores_valid = seen > 0;
+}
+
 static bool read_system_info(SystemInfo *system) {
     FILE *file = fopen("/proc/meminfo", "r");
     if (!file) return false;
@@ -1194,6 +1250,7 @@ static bool read_system_info(SystemInfo *system) {
     unsigned long long swap_free = swap_free_kb * 1024ULL;
     system->swap_used = system->swap_total > swap_free ? system->swap_total - swap_free : 0;
     system->swap_percent = system->swap_total ? 100.0 * (double)system->swap_used / (double)system->swap_total : 0.0;
+    read_cpu_core_usage(system);
     return true;
 }
 
@@ -2479,6 +2536,83 @@ static void draw_disk_plot(Screen *screen, int top, int left, int width,
                            history_peak_400(history), GRAPH_AXIS_DISK_RATE, false, "I/O Spd");
 }
 
+static void add_click_target(UiState *ui, int row, int left, int right, unsigned char key);
+
+static bool cpu_grid_hex_mode(const UiState *ui) {
+    return ui->cpu_grid_hex_manual ? ui->cpu_grid_hex : ui->cpu_grid_hex_auto;
+}
+
+static void toggle_cpu_grid_format(UiState *ui) {
+    ui->cpu_grid_hex = !cpu_grid_hex_mode(ui);
+    ui->cpu_grid_hex_manual = true;
+}
+
+/* CPU core utilization grid. Rows are Y=0..4 (top to bottom), columns are
+   X values in steps of CPU_GRID_STEP; cell (X, Y) is CPU index X + Y. */
+static void draw_cpu_core_grid(Screen *screen, int top, int left, int width,
+                               const SystemInfo *system, UiState *ui) {
+    ui->cpu_grid_hex_auto = system->cpu_core_count > 99;
+    bool hex = cpu_grid_hex_mode(ui);
+    const char *mode_label = hex ? "HEX" : "DEC";
+    char title[96];
+    snprintf(title, sizeof(title), "CPU UTIL(%s) [CPU Index = X+Y] [%s]", "%", mode_label);
+    int button_left = left + (int)strlen(title) - 4; /* first character inside [ ] */
+    screen_put_attr(screen, top, left, title, width, ATTR_CYAN_BOLD);
+    if (button_left + 3 <= left + width && button_left >= 0 && button_left < screen->cols)
+        screen_put_attr(screen, top, button_left, mode_label, 3, ATTR_TEXT_GREEN);
+    const int label_width = 2; /* Y label plus the vertical divider */
+    const int min_cell_width = 4;
+    const int max_cell_width = 8;
+    int usable = width - label_width;
+    int needed = 0;
+    if (system->cpu_cores_valid && system->cpu_core_count > 0)
+        needed = (system->cpu_core_count + CPU_GRID_STEP - 1) / CPU_GRID_STEP;
+    if (needed == 0) {
+        screen_put_attr(screen, top + 1, left, "CPU core data unavailable", width, ATTR_DIM);
+        return;
+    }
+    int columns = needed;
+    if (columns > usable / min_cell_width) columns = usable / min_cell_width;
+    if (columns < 1) {
+        screen_put_attr(screen, top + 1, left, "terminal too narrow", width, ATTR_DIM);
+        return;
+    }
+    /* Spread the grid across the available width, up to a readable cell size. */
+    int cell_width = usable / columns;
+    if (cell_width > max_cell_width) cell_width = max_cell_width;
+    if (cell_width < min_cell_width) cell_width = min_cell_width;
+
+    for (int y = 0; y < GRAPH_ROWS; y++) {
+        int row = top + 1 + y;
+        screen_putf(screen, row, left, 1, "%d", y);
+        screen_overlay(screen, row, left + 1, "\xE2\x94\x82", ATTR_DIM);
+        for (int x = 0; x < columns; x++) {
+            int cpu_index = x * CPU_GRID_STEP + y;
+            int cell_left = left + label_width + x * cell_width;
+            if (cpu_index < system->cpu_core_count) {
+                double usage = system->cpu_core_percent[cpu_index];
+                if (usage < 0.0) usage = 0.0;
+                if (usage > 100.0) usage = 100.0;
+                screen_putf_attr(screen, row, cell_left, cell_width - 1,
+                                 gradient_attr((int)usage, 101), "%*.0f",
+                                 cell_width - 1, usage);
+            }
+            screen_overlay(screen, row, cell_left + cell_width - 1,
+                           "\xE2\x94\x82", ATTR_DIM);
+        }
+    }
+    int label_row = top + 1 + GRAPH_ROWS;
+    for (int x = 0; x < columns; x++) {
+        int cell_left = left + label_width + x * cell_width;
+        char x_label[8];
+        snprintf(x_label, sizeof(x_label), hex ? "%02X" : "%02d", x * CPU_GRID_STEP);
+        screen_putf(screen, label_row, cell_left, cell_width - 1, "%*s",
+                    cell_width - 1, x_label);
+    }
+    if (button_left > 0 && button_left + 4 <= screen->cols)
+        add_click_target(ui, top, button_left - 1, button_left + 4, UI_KEY_CPU_FORMAT);
+}
+
 static void draw_load_bar(Screen *screen, int row, int start, double memory, double gpu) {
     int width = screen->cols - start;
     if (width < 10) return;
@@ -3109,7 +3243,7 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
     ui->click_target_count = 0;
     char controls[256];
     snprintf(controls, sizeof(controls),
-             "%s %.1fs | q quit h help a monitor [ ] select(>) u/d move x remove c fold selected g GPU m SYS space pause +/- rate r reset j next k kill",
+             "%s %.1fs | q quit h help a monitor [ ] select(>) u/d move x remove c fold selected g GPU&CPU m SYS v DEC/HEX space pause +/- rate r reset j next k kill",
              paused ? "PAUSED" : "LIVE", interval);
     int controls_width = screen->cols;
     if (active_web_port && active_web_url[0]) {
@@ -3127,7 +3261,7 @@ static void draw_header(Screen *screen, const char *driver, const char *cuda_lib
         {"[ ] select", '[', 0}, {"[ ] select", ']', 2},
         {"u/d move", 'u', 0}, {"u/d move", 'd', 2},
         {"x remove", 'x', 0}, {"c fold", 'c', 0},
-        {"g GPU", 'g', 0}, {"m SYS", 'm', 0}, {"space pause", ' ', 0},
+        {"g GPU&CPU", 'g', 0}, {"m SYS", 'm', 0}, {"v DEC/HEX", 'v', 0}, {"space pause", ' ', 0},
         {"+/- rate", '+', 0}, {"+/- rate", '-', 2},
         {"r reset", 'r', 0}, {"j next", 'j', 0}, {"k kill", 'k', 0},
     };
@@ -3247,7 +3381,7 @@ static void dashboard_section_title(char *out, size_t size, const DashboardSecti
             if (monitor) prefix = monitor->prefix;
         }
     }
-    const char *name = section->type == SECTION_GPU ? "GPU" :
+    const char *name = section->type == SECTION_GPU ? "GPU & CPU" :
                        section->type == SECTION_SYSTEM ? "SYSTEM" : "GPU PROCESSES";
     if (prefix[0]) snprintf(out, size, "%s(%s)", name, prefix);
     else snprintf(out, size, "%s", name);
@@ -3273,13 +3407,15 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
             "h            show/hide this help",
             "click ▲ / ▼ before a section title to move it up/down",
             "click right marker     collapse/expand that section",
+            "click [DEC]/[HEX]      toggle CPU grid label format",
             "a            focus the bottom REMOTE address field",
             "Enter address in REMOTE; optional credentials go in TOKEN",
             "Click ADD to connect; Tab/Enter moves focus to TOKEN and ADD",
             "[ / ]        select a dashboard section (marked with >)",
             "u / d        move selected section up/down",
             "x            remove the selected remote monitor",
-            "g / m        collapse/expand local GPU / SYSTEM",
+            "g / m        collapse/expand local GPU & CPU / SYSTEM",
+            "v            toggle CPU grid DEC/HEX (auto by core count)",
             "Space        pause/resume sampling",
             "+ / -        increase/decrease refresh interval",
             "j            select next GPU process",
@@ -3359,22 +3495,28 @@ static void render_screen(Screen *screen, const GpuInfo *gpus, int gpu_count,
             if (collapsed) {
                 int half = (screen->cols - 2) / 2;
                 screen_putf(screen, y, 0, half, "GPU MEM AVG(%.1f%%)", memory_average);
-                screen_putf(screen, y, half + 2, screen->cols - half - 2, "GPU AVG(%.1f%%)", gpu_average);
+                screen_putf(screen, y, half + 2, screen->cols - half - 2, "GPU UTIL AVG(%.1f%%)", gpu_average);
                 y++;
             } else {
                 int gap = 2;
-                int left_width = (screen->cols - gap) / 2;
-                int right_left = left_width + gap;
-                int right_width = screen->cols - right_left;
+                int panel_space = screen->cols - 3 * gap;
+                int panel_width = panel_space / 4;
+                int remainder = panel_space % 4;
+                int left_width = panel_width + (remainder > 0 ? 1 : 0);
+                int gpu_width = panel_width + (remainder > 1 ? 1 : 0);
+                int gpu_left = left_width + gap;
+                int cpu_left = gpu_left + gpu_width + gap;
+                int cpu_width = screen->cols - cpu_left;
                 char memory_title[64], gpu_title[64];
                 if (memory_count)
                     snprintf(memory_title, sizeof(memory_title), "GPU MEM AVG(%.1f%%) [30s|10s|3s|1s]", memory_average);
                 else snprintf(memory_title, sizeof(memory_title), "GPU MEM AVG(N/A) [30s|10s|3s|1s]");
                 if (gpu_count_valid)
-                    snprintf(gpu_title, sizeof(gpu_title), "GPU AVG(%.1f%%) [30s|10s|3s|1s]", gpu_average);
-                else snprintf(gpu_title, sizeof(gpu_title), "GPU AVG(N/A) [30s|10s|3s|1s]");
+                    snprintf(gpu_title, sizeof(gpu_title), "GPU UTIL AVG(%.1f%%) [30s|10s|3s|1s]", gpu_average);
+                else snprintf(gpu_title, sizeof(gpu_title), "GPU UTIL AVG(N/A) [30s|10s|3s|1s]");
                 draw_plot(screen, y, 0, left_width, view->vram_history, memory_title, NULL, NULL, true);
-                draw_plot(screen, y, right_left, right_width, view->gpu_history, gpu_title, NULL, NULL, true);
+                draw_plot(screen, y, gpu_left, gpu_width, view->gpu_history, gpu_title, NULL, NULL, true);
+                draw_cpu_core_grid(screen, y, cpu_left, cpu_width, view->system, ui);
                 y += 2 + GRAPH_ROWS;
             }
         } else if (section->type == SECTION_SYSTEM) {
@@ -3767,6 +3909,7 @@ static void handle_key(unsigned char key, UiState *ui, bool *paused, bool *help_
         }
     } else if (key == 'g' || key == 'G') ui->usage_collapsed = !ui->usage_collapsed;
     else if (key == 'm' || key == 'M') ui->system_collapsed = !ui->system_collapsed;
+    else if (key == 'v' || key == 'V') toggle_cpu_grid_format(ui);
     else if (key == ' ') *paused = !*paused;
     else if (key == '+' || key == '=') {
         *interval += 0.1;
@@ -3836,6 +3979,8 @@ static void dispatch_key(unsigned char key, UiState *ui, bool *paused, bool *hel
         ui->notice_error = false;
     } else if (key == UI_KEY_SUBMIT_MONITOR) {
         submit_monitor_input(ui);
+    } else if (key == UI_KEY_CPU_FORMAT) {
+        toggle_cpu_grid_format(ui);
     } else if (ui->monitor_prompt) handle_monitor_prompt_key(key, ui);
     else if (key == 'q' || key == 'Q' || (key == 0x1b && !ui->kill_prompt)) *quit = true;
     else handle_key(key, ui, paused, help_visible, interval, vram, gpu, ram, swap,
@@ -4599,6 +4744,23 @@ static bool remote_parse_metrics(RemoteMonitor *monitor, const char *json) {
         json_get_uint(object, "total", &system.swap_total);
         system.swap_percent = system.swap_total ? 100.0 * (double)system.swap_used / (double)system.swap_total : 0.0;
     }
+    if (json_object_field(json, "cpu", &object, NULL)) {
+        int count = 0;
+        json_get_int(object, "count", &count);
+        json_get_bool(object, "valid", &system.cpu_cores_valid);
+        if (count < 0) count = 0;
+        if (count > MAX_CPU_CORES) count = MAX_CPU_CORES;
+        const char *cores, *cores_end;
+        if (json_object_field(object, "cores", &cores, &cores_end) && *cores == '[') {
+            const char *cursor = cores + 1, *item, *item_end;
+            while (system.cpu_core_count < count &&
+                   json_array_next(&cursor, cores_end - 1, &item, &item_end)) {
+                (void)item_end;
+                system.cpu_core_percent[system.cpu_core_count++] = strtod(item, NULL);
+            }
+        }
+        if (system.cpu_core_count == 0) system.cpu_cores_valid = false;
+    }
     if (json_object_field(json, "disk", &object, NULL)) {
         json_get_bool(object, "capacity_valid", &disk.capacity_valid);
         json_get_bool(object, "valid", &disk.valid);
@@ -4948,7 +5110,13 @@ static char *web_metrics_json(const GpuInfo *gpus, int gpu_count,
     fprintf(stream, "},\"swap\":{\"used\":%llu,\"total\":%llu,\"percent\":",
             system->swap_used, system->swap_total);
     json_number(stream, system->swap_percent, true);
-    fprintf(stream, "},\"disk\":{\"used\":%llu,\"total\":%llu,\"capacity_valid\":%s,\"valid\":%s,\"read_bps\":",
+    fprintf(stream, "},\"cpu\":{\"count\":%d,\"valid\":%s,\"cores\":[",
+            system->cpu_core_count, system->cpu_cores_valid ? "true" : "false");
+    for (int i = 0; i < system->cpu_core_count; i++) {
+        if (i) fputc(',', stream);
+        json_number(stream, system->cpu_core_percent[i], true);
+    }
+    fprintf(stream, "]},\"disk\":{\"used\":%llu,\"total\":%llu,\"capacity_valid\":%s,\"valid\":%s,\"read_bps\":",
             disk->used_bytes, disk->total_bytes,
             disk->capacity_valid ? "true" : "false", disk->valid ? "true" : "false");
     json_number(stream, disk->read_bps, disk->valid);

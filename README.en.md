@@ -16,6 +16,7 @@ A lightweight terminal dashboard for AMD/NVIDIA GPUs, system memory, processes, 
 - RAM and SWAP usage with history graphs
 - Live disk I/O graph with a Y-axis scaled to the maximum peak measured over the last 400 seconds
 - GPU memory and utilization history graphs
+- Per-core CPU utilization grid in the GPU & CPU section (local and remote monitors)
 - Network throughput in bit/s with per-interface link-speed utilization
 - RX/TX indicators and per-interface network rows
 - Docker-related interfaces (`docker*`, `br-*`, and `veth*`) excluded from host network totals
@@ -172,11 +173,11 @@ curl -H "Authorization: Bearer TOKEN" http://localhost:8079/api/v1/metrics
 curl "http://localhost:8079/api/v1/metrics?token=TOKEN"
 ```
 
-The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. Without `--token`, the dashboard and API are open without authentication. The metrics API allows cross-origin browser requests for multi-monitoring, so use `--token` on instances exposed to a network.
+The response is JSON (`application/json`) and includes current GPU, process, RAM/SWAP, per-core CPU (`cpu.cores`), disk, and network metrics along with graph history. `/api/metrics` returns the same payload. Each history sample carries its age in seconds (`age_seconds`) and its measured value (`value`); NET history values are throughput in bit/s, and `sample_interval` reports the sampling interval in seconds. When more than 500 samples fall inside the 400-second window they are bucketed, but each bucket keeps its minimum and maximum value. GPU averages are computed over the devices that returned valid readings. By default, the server listens on all network interfaces (`0.0.0.0`). Add `--localhost` to restrict it to `127.0.0.1`. Without `--token`, the dashboard and API are open without authentication. The metrics API allows cross-origin browser requests for multi-monitoring, so use `--token` on instances exposed to a network.
 
 ## TUI remote monitors and controls
 
-The remote monitor list is shared with the web dashboard; adding or removing a monitor in either UI updates the other. Enter the server address in the bottom `REMOTE` field and, if required, its token in the adjacent `TOKEN` field; then click `ADD` to connect. Entering an address alone does not connect or create a monitor section. Click either field or press `a` to focus the address. Tab/Enter moves focus through TOKEN and ADD; press Enter on the focused ADD button to connect. A URL such as `http://host:port` is also accepted; `/api/v1/metrics` is appended automatically. Remote GPUs are combined in GPU LIST, while GPU graphs, SYSTEM, and GPU PROCESSES appear in separate sections per monitor. You can also pass `--monitor ADDRESS` at startup (repeatable). TUI remote connections currently support HTTP only; tokens are sent unencrypted, so do not use them over untrusted networks.
+The remote monitor list is shared with the web dashboard; adding or removing a monitor in either UI updates the other. Enter the server address in the bottom `REMOTE` field and, if required, its token in the adjacent `TOKEN` field; then click `ADD` to connect. Entering an address alone does not connect or create a monitor section. Click either field or press `a` to focus the address. Tab/Enter moves focus through TOKEN and ADD; press Enter on the focused ADD button to connect. A URL such as `http://host:port` is also accepted; `/api/v1/metrics` is appended automatically. Remote GPUs are combined in GPU LIST, while GPU & CPU graphs, SYSTEM, and GPU PROCESSES appear in separate sections per monitor. You can also pass `--monitor ADDRESS` at startup (repeatable). TUI remote connections currently support HTTP only; tokens are sent unencrypted, so do not use them over untrusted networks.
 
 ```text
 q / Esc                   quit
@@ -187,7 +188,8 @@ Tab / Enter               move focus through TOKEN and ADD
 u / d                     move the selected section up/down
 x                         remove the selected remote monitor
 c                         collapse/expand the selected section
-g / m                     collapse/expand local GPU / SYSTEM sections
+g / m                     collapse/expand local GPU & CPU / SYSTEM sections
+v                         toggle CPU grid DEC/HEX labels
 Space                     pause/resume sampling
 + / -                     change refresh interval
 r                         clear graph history
@@ -196,6 +198,12 @@ k / K                     confirm SIGTERM for a selected local process
 ```
 
 Use `[ / ]` to move between sections; the currently selected section is marked with `>` before its title. `c` collapses or expands only the selected section (`GPU LIST` cannot be collapsed). Section order lasts for the current TUI session. When the terminal supports SGR mouse input, click `▲`/`▼` before a title to move that section up or down, and the right triangle to collapse or expand it.
+
+## CPU utilization grid
+
+The right half of the `GPU & CPU` section shows a five-row grid of per-core CPU utilization. Columns are separated by vertical rules; each cell contains a single utilization percentage. A cell's CPU index is `X (column label) + Y (row label)`, with Y running from `0` to `4` top to bottom and X stepping by 5 cores. For example, column `05` row `2` is CPU 7. The numbers use the same gradient as the graphs and are colored by the **utilization value** (e.g. 10% green, 90% red). The grid shows only the columns needed for the actual core count and widens cells to fill any leftover space.
+
+The X label format defaults to the core count: decimal (`00, 05, 10, …`) for 99 cores or fewer, hexadecimal (`00, 05, 0A, …`) for 100 or more. Click the `[DEC]`/`[HEX]` button in the title or press `v` to override it manually. Remote monitor sections use the same grid and read the remote ctop `cpu.cores` API values.
 
 ## Disk display
 
