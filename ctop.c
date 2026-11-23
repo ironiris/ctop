@@ -2582,8 +2582,17 @@ static void draw_cpu_core_grid(Screen *screen, int top, int left, int width,
     if (cell_width > max_cell_width) cell_width = max_cell_width;
     if (cell_width < min_cell_width) cell_width = min_cell_width;
 
+    int label_row = top + 1;
+    for (int x = 0; x < columns; x++) {
+        int cell_left = left + label_width + x * cell_width;
+        char x_label[8];
+        snprintf(x_label, sizeof(x_label), hex ? "%02X" : "%02d", x * CPU_GRID_STEP);
+        screen_putf(screen, label_row, cell_left, cell_width - 1, "%*s",
+                    cell_width - 1, x_label);
+    }
+
     for (int y = 0; y < GRAPH_ROWS; y++) {
-        int row = top + 1 + y;
+        int row = top + 2 + y;
         screen_putf(screen, row, left, 1, "%d", y);
         screen_overlay(screen, row, left + 1, "\xE2\x94\x82", ATTR_DIM);
         for (int x = 0; x < columns; x++) {
@@ -2600,14 +2609,6 @@ static void draw_cpu_core_grid(Screen *screen, int top, int left, int width,
             screen_overlay(screen, row, cell_left + cell_width - 1,
                            "\xE2\x94\x82", ATTR_DIM);
         }
-    }
-    int label_row = top + 1 + GRAPH_ROWS;
-    for (int x = 0; x < columns; x++) {
-        int cell_left = left + label_width + x * cell_width;
-        char x_label[8];
-        snprintf(x_label, sizeof(x_label), hex ? "%02X" : "%02d", x * CPU_GRID_STEP);
-        screen_putf(screen, label_row, cell_left, cell_width - 1, "%*s",
-                    cell_width - 1, x_label);
     }
     if (button_left > 0 && button_left + 4 <= screen->cols)
         add_click_target(ui, top, button_left - 1, button_left + 4, UI_KEY_CPU_FORMAT);
