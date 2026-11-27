@@ -41,7 +41,7 @@
 
 #include "web_assets.h"
 
-#define CTOP_VERSION "0.5.0"
+#define CTOP_VERSION "0.5.1"
 #define GRAPH_ROWS 5
 #define CPU_GRID_STEP 5
 #define MAX_CPU_CORES 512
