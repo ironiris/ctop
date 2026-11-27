@@ -58,6 +58,7 @@
 #define MAX_SCREEN_COLS 2048
 #define MAX_OVERLAYS 8192
 #define MAX_NETWORK_INTERFACES 32
+#define MAX_AMD_ENGINES 8
 #define MAX_DISK_DEVICES 128
 #define MAX_CLICK_TARGETS 64
 #define INPUT_BUFFER_SIZE 8192
@@ -130,10 +131,10 @@ typedef struct {
     char user[64];
     char command[512];
     char elapsed_display[32];
-    unsigned long long drm_gfx_engine_ns;
+    unsigned long long drm_engine_ns[MAX_AMD_ENGINES];
+    bool drm_engine_valid[MAX_AMD_ENGINES];
     unsigned long long drm_memory_vram_kib;
     unsigned long long drm_memory_gtt_kib;
-    bool drm_gfx_engine_valid;
     bool drm_memory_vram_valid;
     bool drm_memory_gtt_valid;
 } ProcessInfo;
@@ -286,7 +287,7 @@ typedef struct {
 typedef struct {
     pid_t pid;
     char pci_bus_id[24];
-    unsigned long long engine_ns;
+    unsigned long long engine_ns[MAX_AMD_ENGINES];
     double timestamp;
     unsigned long long generation;
 } DrmProcessPrevious;
@@ -1265,10 +1266,10 @@ typedef struct {
 typedef struct {
     char driver[32];
     char pci_bus_id[24];
-    unsigned long long gfx_engine_ns;
+    unsigned long long engine_ns[MAX_AMD_ENGINES];
+    bool engine_valid[MAX_AMD_ENGINES];
     unsigned long long memory_vram_kib;
     unsigned long long memory_gtt_kib;
-    bool gfx_engine_valid;
     bool memory_vram_valid;
     bool memory_gtt_valid;
 } DrmFdInfo;
@@ -1353,6 +1354,8 @@ static int enumerate_amd_drm_devices(DrmDeviceInfo *devices, int capacity) {
             snprintf(device->pci_bus_id, sizeof(device->pci_bus_id), "%s", basename + 1);
         }
         device->device_id = device_id;
+        debug_log("amd drm: /sys/class/drm/%s vendor=0x%04x device=0x%04x pci=%s sysfs=%s",
+                  entry->d_name, vendor, device_id, device->pci_bus_id, device->sysfs_path);
         count++;
     }
     closedir(drm_directory);
@@ -1410,13 +1413,19 @@ static bool initialize_vulkan_backend(char *error, size_t error_size) {
         free(physical_devices);
         return false;
     }
+    debug_log("vulkan: %u physical device(s) enumerated", count);
 
     DrmDeviceInfo drm_devices[MAX_GPUS] = {0};
     int drm_count = enumerate_amd_drm_devices(drm_devices, MAX_GPUS);
+    debug_log("vulkan: %d AMD DRM device(s) available for matching", drm_count);
     for (uint32_t i = 0; i < count && vulkan_gpu_count < MAX_GPUS; i++) {
         VkPhysicalDeviceProperties properties;
         vkGetPhysicalDeviceProperties(physical_devices[i], &properties);
-        if (properties.vendorID != 0x1002) continue;
+        if (properties.vendorID != 0x1002) {
+            debug_log("vulkan: device %u %s (vendor 0x%04x) is not AMD, skipping",
+                      i, properties.deviceName, properties.vendorID);
+            continue;
+        }
 
         VulkanGpu *gpu = &vulkan_gpus[vulkan_gpu_count];
         memset(gpu, 0, sizeof(*gpu));
@@ -1459,9 +1468,15 @@ static bool initialize_vulkan_backend(char *error, size_t error_size) {
             snprintf(gpu->pci_bus_id, sizeof(gpu->pci_bus_id), "%s", matched->pci_bus_id);
             snprintf(gpu->sysfs_path, sizeof(gpu->sysfs_path), "%s", matched->sysfs_path);
         }
+        debug_log("vulkan: device %u %s pci=%s -> %s%s", i, gpu->name,
+                  gpu->pci_bus_id[0] ? gpu->pci_bus_id : "(no pci info)",
+                  matched ? gpu->sysfs_path : "(no DRM match)",
+                  gpu->device_id == 0x13fe ? ", GTT preferred" : "");
         gpu->prefer_gtt = gpu->device_id == 0x13fe;
         vulkan_gpu_count++;
     }
+    if (!vulkan_gpu_count)
+        debug_log("vulkan: %u device(s) enumerated but none are AMD", count);
     free(physical_devices);
     return true;
 }
@@ -1508,6 +1523,29 @@ static void read_amd_hwmon(GpuInfo *gpu) {
     closedir(directory);
 }
 
+/* One line per device when its sysfs utilization source changes state: a missing
+   or unreadable gpu_busy_percent is what pushes APUs onto the fdinfo path. */
+static void report_amd_busy_source(const char *path, bool ok) {
+    static struct {
+        char path[PATH_MAX + 64];
+        bool ok;
+    } reported[8];
+    static size_t reported_count;
+
+    for (size_t i = 0; i < reported_count; i++) {
+        if (strcmp(reported[i].path, path) != 0) continue;
+        if (reported[i].ok == ok) return;
+        reported[i].ok = ok;
+        debug_log("amd sysfs: %s now %s", path, ok ? "readable" : "unreadable");
+        return;
+    }
+    if (reported_count >= ARRAY_LEN(reported)) return;
+    snprintf(reported[reported_count].path, sizeof(reported[0].path), "%s", path);
+    reported[reported_count].ok = ok;
+    reported_count++;
+    debug_log("amd sysfs: %s %s", path, ok ? "readable" : "unreadable");
+}
+
 static void read_amd_gpu_metrics(GpuInfo *gpu) {
     if (!gpu->sysfs_path[0]) return;
     char path[PATH_MAX + 64];
@@ -1537,10 +1575,12 @@ static void read_amd_gpu_metrics(GpuInfo *gpu) {
 
     unsigned long long busy = 0;
     snprintf(path, sizeof(path), "%s/gpu_busy_percent", gpu->sysfs_path);
-    if (read_unsigned_file(path, &busy) && busy <= 100) {
+    bool busy_ok = read_unsigned_file(path, &busy) && busy <= 100;
+    if (busy_ok) {
         gpu->utilization = (double)busy;
         gpu->utilization_valid = true;
     }
+    report_amd_busy_source(path, busy_ok);
     read_amd_hwmon(gpu);
 }
 
@@ -1563,6 +1603,30 @@ static ProcessInfo *find_or_add_gpu_process(GpuInfo *gpu, pid_t pid) {
     return process;
 }
 
+/* amdgpu reports per-client engine time under a line per ring it has actually
+   scheduled work for, and a compute-only client never produces a gfx line.  Keep
+   one slot per engine name so a Vulkan or ROCm client that only uses the compute,
+   video or copy rings still contributes.  Slots are assigned in first-seen order
+   and stay stable across samples so the previous-sample bookkeeping keeps matching
+   up. */
+static char amd_engine_names[MAX_AMD_ENGINES][16];
+static int amd_engine_count;
+static bool amd_engine_overflow_logged;
+
+static int amd_engine_slot(const char *name) {
+    for (int i = 0; i < amd_engine_count; i++)
+        if (strcmp(amd_engine_names[i], name) == 0) return i;
+    if (amd_engine_count >= MAX_AMD_ENGINES) {
+        if (!amd_engine_overflow_logged) {
+            amd_engine_overflow_logged = true;
+            debug_log("amd engines: more than %d distinct engines, ignoring the rest", MAX_AMD_ENGINES);
+        }
+        return -1;
+    }
+    snprintf(amd_engine_names[amd_engine_count], sizeof(amd_engine_names[0]), "%s", name);
+    return amd_engine_count++;
+}
+
 static bool read_drm_fdinfo(const char *path, DrmFdInfo *info) {
     FILE *file = fopen(path, "r");
     if (!file) return false;
@@ -1572,8 +1636,16 @@ static bool read_drm_fdinfo(const char *path, DrmFdInfo *info) {
             sscanf(line + 11, "%31s", info->driver);
         } else if (strncmp(line, "drm-pdev:", 9) == 0) {
             sscanf(line + 9, "%23s", info->pci_bus_id);
-        } else if (strncmp(line, "drm-engine-gfx:", 15) == 0) {
-            info->gfx_engine_valid = sscanf(line + 15, "%llu", &info->gfx_engine_ns) == 1;
+        } else if (strncmp(line, "drm-engine-", 11) == 0) {
+            char name[16];
+            unsigned long long value = 0;
+            if (sscanf(line + 11, "%15[^:]: %llu", name, &value) == 2) {
+                int slot = amd_engine_slot(name);
+                if (slot >= 0) {
+                    info->engine_ns[slot] = value;
+                    info->engine_valid[slot] = true;
+                }
+            }
         } else if (strncmp(line, "drm-memory-vram:", 16) == 0) {
             info->memory_vram_valid = sscanf(line + 16, "%llu", &info->memory_vram_kib) == 1;
         } else if (strncmp(line, "drm-memory-gtt:", 15) == 0) {
@@ -1603,6 +1675,7 @@ static void collect_amd_processes(GpuInfo *gpus, int gpu_count) {
     if (!proc_directory) return;
     double now = monotonic_seconds();
     if (++drm_sample_generation == 0) drm_sample_generation = 1;
+    int fdinfo_denied = 0, clients = 0, unmatched = 0, dropped = 0;
     struct dirent *process_entry;
     while ((process_entry = readdir(proc_directory)) != NULL) {
         char *end = NULL;
@@ -1613,7 +1686,15 @@ static void collect_amd_processes(GpuInfo *gpus, int gpu_count) {
         char fdinfo_path[PATH_MAX];
         snprintf(fdinfo_path, sizeof(fdinfo_path), "/proc/%ld/fdinfo", raw_pid);
         DIR *fdinfo_directory = opendir(fdinfo_path);
-        if (!fdinfo_directory) continue;
+        if (!fdinfo_directory) {
+            /* Another user's fdinfo is expected to be closed to us; ours is not, so
+               only the latter is worth counting as a blind spot. */
+            unsigned int uid = 0;
+            unsigned long long rss_kb = 0;
+            read_proc_status(pid, &uid, &rss_kb);
+            if ((errno == EACCES || errno == EPERM) && uid == (unsigned int)getuid()) fdinfo_denied++;
+            continue;
+        }
         struct dirent *fdinfo_entry;
         while ((fdinfo_entry = readdir(fdinfo_directory)) != NULL) {
             if (fdinfo_entry->d_name[0] == '.') continue;
@@ -1621,14 +1702,19 @@ static void collect_amd_processes(GpuInfo *gpus, int gpu_count) {
             snprintf(path, sizeof(path), "%s/%s", fdinfo_path, fdinfo_entry->d_name);
             DrmFdInfo info = {0};
             if (!read_drm_fdinfo(path, &info) || strcmp(info.driver, "amdgpu") != 0) continue;
+            bool any_engine = false;
+            for (int e = 0; e < MAX_AMD_ENGINES; e++)
+                if (info.engine_valid[e]) any_engine = true;
+            if (!any_engine && !info.memory_vram_valid && !info.memory_gtt_valid) continue;
+            clients++;
             GpuInfo *gpu = find_amd_gpu_by_pci(gpus, gpu_count, info.pci_bus_id);
-            if (!gpu) continue;
-            if (!info.gfx_engine_valid && !info.memory_vram_valid && !info.memory_gtt_valid) continue;
+            if (!gpu) { unmatched++; continue; }
             ProcessInfo *process = find_or_add_gpu_process(gpu, pid);
-            if (!process) continue;
-            if (info.gfx_engine_valid) {
-                process->drm_gfx_engine_ns += info.gfx_engine_ns;
-                process->drm_gfx_engine_valid = true;
+            if (!process) { dropped++; continue; }
+            for (int e = 0; e < MAX_AMD_ENGINES; e++) {
+                if (!info.engine_valid[e]) continue;
+                process->drm_engine_ns[e] += info.engine_ns[e];
+                process->drm_engine_valid[e] = true;
             }
             if (info.memory_vram_valid) {
                 process->drm_memory_vram_kib += info.memory_vram_kib;
@@ -1646,8 +1732,8 @@ static void collect_amd_processes(GpuInfo *gpus, int gpu_count) {
     for (int i = 0; i < gpu_count; i++) {
         GpuInfo *gpu = &gpus[i];
         if (!gpu->is_amd) continue;
-        double process_utilization = 0.0;
-        bool process_utilization_valid = false;
+        double engine_utilization[MAX_AMD_ENGINES] = {0};
+        bool engine_utilization_valid[MAX_AMD_ENGINES] = {0};
         for (size_t j = 0; j < gpu->process_count; j++) {
             ProcessInfo *process = &gpu->processes[j];
             if (process->drm_memory_gtt_valid && gpu->prefer_gtt &&
@@ -1663,32 +1749,63 @@ static void collect_amd_processes(GpuInfo *gpus, int gpu_count) {
                 process->gpu_memory = process->drm_memory_gtt_kib * 1024ULL;
                 process->gpu_memory_valid = true;
             }
-            if (process->drm_gfx_engine_valid) {
-                DrmProcessPrevious *previous = find_drm_process_previous(process->pid, gpu->pci_bus_id);
-                if (previous) {
-                    if (previous->generation && now > previous->timestamp &&
-                        process->drm_gfx_engine_ns >= previous->engine_ns) {
-                        double elapsed = now - previous->timestamp;
-                        process->sm = 100.0 * (double)(process->drm_gfx_engine_ns - previous->engine_ns) /
-                                      (elapsed * 1000000000.0);
-                        clamp_percent(&process->sm);
+            bool any_engine = false;
+            for (int e = 0; e < MAX_AMD_ENGINES; e++)
+                if (process->drm_engine_valid[e]) any_engine = true;
+            if (!any_engine) continue;
+            DrmProcessPrevious *previous = find_drm_process_previous(process->pid, gpu->pci_bus_id);
+            if (!previous) { dropped++; continue; }
+            /* A process's own share is its busiest engine, not the sum of its
+               engines: a client submitting on gfx and compute at the same time is
+               still one client on one GPU. */
+            for (int e = 0; e < MAX_AMD_ENGINES; e++) {
+                if (!process->drm_engine_valid[e]) continue;
+                if (previous->generation && now > previous->timestamp &&
+                    process->drm_engine_ns[e] >= previous->engine_ns[e]) {
+                    double elapsed = now - previous->timestamp;
+                    double utilization = 100.0 * (double)(process->drm_engine_ns[e] - previous->engine_ns[e]) /
+                                       (elapsed * 1000000000.0);
+                    clamp_percent(&utilization);
+                    if (!process->sm_valid || utilization > process->sm) {
+                        process->sm = utilization;
                         process->sm_valid = true;
                     }
-                    previous->engine_ns = process->drm_gfx_engine_ns;
-                    previous->timestamp = now;
-                    previous->generation = drm_sample_generation;
+                    if (amd_engine_names[e][0]) {
+                        engine_utilization[e] += utilization;
+                        engine_utilization_valid[e] = true;
+                    }
                 }
+                previous->engine_ns[e] = process->drm_engine_ns[e];
             }
-            if (process->sm_valid) {
-                process_utilization += process->sm;
+            previous->timestamp = now;
+            previous->generation = drm_sample_generation;
+        }
+        /* Same rule one level up: the busiest engine is the number to show. */
+        double process_utilization = 0.0;
+        bool process_utilization_valid = false;
+        for (int e = 0; e < MAX_AMD_ENGINES; e++) {
+            if (!engine_utilization_valid[e]) continue;
+            double utilization = engine_utilization[e];
+            clamp_percent(&utilization);
+            if (!process_utilization_valid || utilization > process_utilization) {
+                process_utilization = utilization;
                 process_utilization_valid = true;
             }
         }
-        if (!gpu->utilization_valid && process_utilization_valid) {
+        if (process_utilization_valid) {
             clamp_percent(&process_utilization);
-            gpu->utilization = process_utilization;
-            gpu->utilization_valid = true;
+            /* A source that only ever reports zero (ROCm busy percent on an APU, no
+               gpu_busy_percent) must not lock out a counter that actually moves. */
+            if (!gpu->utilization_valid || (gpu->utilization <= 0.0 && process_utilization > 0.0)) {
+                gpu->utilization = process_utilization;
+                gpu->utilization_valid = true;
+                snprintf(gpu->data_source, sizeof(gpu->data_source), "fdinfo");
+            }
         }
+        debug_log("amd fdinfo gpu[%d] %s: clients=%d unmatched=%d dropped=%d denied=%d "
+                  "util_valid=%d util=%.1f source=%s",
+                  gpu->index, gpu->name, clients, unmatched, dropped, fdinfo_denied,
+                  gpu->utilization_valid, gpu->utilization, gpu->data_source);
     }
 
     size_t kept = 0;
@@ -5916,7 +6033,9 @@ int main(int argc, char **argv) {
     char nvml_error[256] = "";
     if (!initialize_nvml_backend(nvml_error, sizeof(nvml_error))) {
         debug_log("%s", nvml_error);
+#if !defined(CTOP_ENABLE_VULKAN)
         fprintf(stderr, "GPU monitoring unavailable: %s\n", nvml_error);
+#endif
     } else {
         debug_log("NVML initialized");
         if (nvml_api.system_get_driver_version)
@@ -5928,8 +6047,15 @@ int main(int argc, char **argv) {
 #endif
 #if defined(CTOP_ENABLE_VULKAN)
     char vulkan_error[256] = "";
-    if (!initialize_vulkan_backend(vulkan_error, sizeof(vulkan_error)))
-        debug_log("%s", vulkan_error);
+    bool vulkan_failed = !initialize_vulkan_backend(vulkan_error, sizeof(vulkan_error));
+    if (vulkan_failed) debug_log("%s", vulkan_error);
+#if defined(CTOP_ENABLE_NVML)
+    /* On an AMD-only machine NVML failing is expected; only warn when the Vulkan
+       backend found nothing either. */
+    if (vulkan_failed && nvml_error[0]) fprintf(stderr, "GPU monitoring unavailable: %s\n", nvml_error);
+#else
+    if (vulkan_failed) fprintf(stderr, "GPU monitoring unavailable: %s\n", vulkan_error);
+#endif
     if (vulkan_gpu_count) {
         char rocm_error[256] = "";
         if (initialize_rocm_backend(rocm_error, sizeof(rocm_error)))
